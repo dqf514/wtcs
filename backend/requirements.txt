@@ -1,0 +1,19 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+websockets
+python-multipart
+httpx
+pyyaml
+aiosqlite
+sqlalchemy
+greenlet
+python-jose
+passlib
+bcrypt
+numpy
+pillow
+
+# 可选依赖（MQTT 开放数据通道用；现场离线可不装，未安装时代码自动降级并日志提示）：
+# paho-mqtt

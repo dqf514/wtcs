@@ -1,0 +1,99 @@
+# 子系统接入配置 —— 建设期默认全部 simulation
+# 真机上线时：将 mode 改为 real，填写 endpoint，跑连通性测试即可
+
+mode_default: simulation  # simulation | real
+
+ntp_server: "操作员站"
+
+subsystems:
+  main_fan:
+    name: 主风机系统
+    mode: simulation
+    protocol: opcua
+    endpoint: "opc.tcp://192.168.10.11:4840"
+    poll_ms: 100
+    tags:
+      wind_speed: "ns=2;s=Fan.WindSpeed"
+      target_speed: "ns=2;s=Fan.TargetSpeed"
+      frequency: "ns=2;s=Fan.Frequency"
+      running: "ns=2;s=Fan.Running"
+      fault: "ns=2;s=Fan.Fault"
+
+  cooling_water:
+    name: 冷却水系统
+    mode: simulation
+    protocol: opcua
+    endpoint: "opc.tcp://192.168.10.12:4840"
+    poll_ms: 200
+
+  rrs:
+    name: 滚动路面/天平/转台
+    mode: simulation
+    protocol: tcp
+    endpoint: "192.168.10.21:5000"
+    poll_ms: 50
+    note: 测量数据本地存储，实验结束后导入
+
+  traverse:
+    name: 移测架系统
+    mode: simulation
+    protocol: opcua
+    endpoint: "opc.tcp://192.168.10.22:4840"
+    poll_ms: 100
+
+  boundary_layer:
+    name: 边界层抽吸系统
+    mode: simulation
+    protocol: opcua
+    endpoint: "opc.tcp://192.168.10.31:4840"
+    poll_ms: 100
+
+  purge_air:
+    name: 吹扫风系统
+    mode: simulation
+    protocol: opcua
+    endpoint: "opc.tcp://192.168.10.32:4840"
+    poll_ms: 200
+
+  exhaust:
+    name: 尾气抽排系统
+    mode: simulation
+    protocol: opcua
+    endpoint: "opc.tcp://192.168.10.33:4840"
+    poll_ms: 200
+
+  compressed_air:
+    name: 压缩空气系统
+    mode: simulation
+    protocol: opcua
+    endpoint: "opc.tcp://192.168.10.34:4840"
+    poll_ms: 500
+
+  safety:
+    name: 安全连锁
+    mode: simulation
+    protocol: opcua
+    endpoint: "opc.tcp://192.168.10.10:4840"
+    poll_ms: 50
+
+  acoustic:
+    name: 声学测量
+    mode: simulation
+    protocol: tcp
+    endpoint: "192.168.10.41:6000"
+    poll_ms: 200
+    note: 实验数据本地存储后导入
+
+  pressure:
+    name: 压力测量
+    mode: simulation
+    protocol: tcp
+    endpoint: "192.168.10.42:6001"
+    poll_ms: 100
+
+  flow_field:
+    name: 流场测量
+    mode: simulation
+    protocol: tcp
+    endpoint: "192.168.10.43:6002"
+    poll_ms: 200

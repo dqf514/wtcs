@@ -1,0 +1,21 @@
+# ---- Python ----
+__pycache__/
+*.pyc
+.venv/
+
+# ---- 运行数据（数据库/日志/备份/上传的品牌文件）——绝不入库 ----
+backend/data/
+
+# ---- 前端依赖与构建产物 ----
+node_modules/
+frontend/dist/
+
+# ---- 日志 ----
+*.log
+
+# ---- 第三方参考资料（非项目源码） ----
+WTCS界面.pdf
+
+# ---- 系统文件 ----
+.DS_Store
+Thumbs.db
