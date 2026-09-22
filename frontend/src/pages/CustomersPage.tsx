@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, hasMinRole, type Customer, type CustomerDetail } from '../api'
+import { api, hasMinRole, hasPage, type Customer, type CustomerDetail } from '../api'
 import { Modal, ConfirmModal } from '../components/Modal'
 import { IconEye, IconPlus, IconRefresh, IconEdit, IconTrash } from '../components/icons'
 import { orderStatusTone } from './OrdersPage'
@@ -18,7 +18,9 @@ function projectStatusTone(status: string): string {
 
 /** 客户管理：客户档案 CRUD + 名下项目/订单详情（只读） */
 export function CustomersPage({ toast }: { toast: (msg: string, ok?: boolean) => void }) {
-  const canManage = hasMinRole('维护员') // 客户写操作需维护员+
+  const isStaff = hasMinRole('操作员') // 内部员工；客户角色仅可编辑本人档案的联系方式字段
+  const canManage = isStaff && hasPage('customers') // 页面权限=新建/编辑（角色矩阵勾选即可写）
+  const canEdit = hasPage('customers') // 客户角色也可编辑（列表已被后端限定为本人档案）
   const canDelete = hasMinRole('管理员') // 删除仅管理员
   const [list, setList] = useState<Customer[]>([])
   // 新建/编辑弹窗
@@ -104,18 +106,31 @@ export function CustomersPage({ toast }: { toast: (msg: string, ok?: boolean) =>
     e.preventDefault()
     if (!editTarget) return
     try {
-      await api.updateCustomer(editTarget.id, {
-        name: fName,
-        contact: fContact,
-        phone: fPhone,
-        email: fEmail,
-        address: fAddress,
-        notes: fNotes,
-        industry: fIndustry,
-        contact_title: fContactTitle,
-        // 后端约定：空字符串表示清除账号关联
-        username: fUsername || '',
-      })
+      if (isStaff) {
+        await api.updateCustomer(editTarget.id, {
+          name: fName,
+          contact: fContact,
+          phone: fPhone,
+          email: fEmail,
+          address: fAddress,
+          notes: fNotes,
+          industry: fIndustry,
+          contact_title: fContactTitle,
+          // 后端约定：空字符串表示清除账号关联
+          username: fUsername || '',
+        })
+      } else {
+        // 客户角色：仅提交联系方式白名单字段（身份字段由内部员工维护）
+        await api.updateCustomer(editTarget.id, {
+          contact: fContact,
+          phone: fPhone,
+          email: fEmail,
+          address: fAddress,
+          notes: fNotes,
+          industry: fIndustry,
+          contact_title: fContactTitle,
+        })
+      }
       toast('客户档案已更新')
       setEditTarget(null)
       await refresh()
@@ -145,18 +160,23 @@ export function CustomersPage({ toast }: { toast: (msg: string, ok?: boolean) =>
 
   const formFields = (codeReadOnly: boolean) => (
     <>
-      <div className="form-row">
-        <label>客户编号</label>
-        {codeReadOnly ? (
-          <input value={editTarget?.code ?? ''} readOnly disabled />
-        ) : (
-          <input autoFocus value={fCode} onChange={(e) => setFCode(e.target.value)} required placeholder="如 HF-001" />
-        )}
-      </div>
-      <div className="form-row">
-        <label>客户/公司名称</label>
-        <input autoFocus={codeReadOnly} value={fName} onChange={(e) => setFName(e.target.value)} required />
-      </div>
+      {/* 身份字段（编号/名称/关联账号）仅内部员工可见可维护；客户角色编辑本人档案时隐藏 */}
+      {isStaff && (
+        <div className="form-row">
+          <label>客户编号</label>
+          {codeReadOnly ? (
+            <input value={editTarget?.code ?? ''} readOnly disabled />
+          ) : (
+            <input autoFocus value={fCode} onChange={(e) => setFCode(e.target.value)} required placeholder="如 HF-001" />
+          )}
+        </div>
+      )}
+      {isStaff && (
+        <div className="form-row">
+          <label>客户/公司名称</label>
+          <input autoFocus={codeReadOnly} value={fName} onChange={(e) => setFName(e.target.value)} required />
+        </div>
+      )}
       <div className="form-row">
         <label>行业</label>
         <input list="wtcs-industry-options" value={fIndustry} onChange={(e) => setFIndustry(e.target.value)} placeholder="选择或手输行业" />
@@ -188,10 +208,12 @@ export function CustomersPage({ toast }: { toast: (msg: string, ok?: boolean) =>
         <label>地址</label>
         <input value={fAddress} onChange={(e) => setFAddress(e.target.value)} />
       </div>
-      <div className="form-row">
-        <label>关联账号</label>
-        <input value={fUsername} onChange={(e) => setFUsername(e.target.value)} placeholder="客户角色登录账号，可空" />
-      </div>
+      {isStaff && (
+        <div className="form-row">
+          <label>关联账号</label>
+          <input value={fUsername} onChange={(e) => setFUsername(e.target.value)} placeholder="客户角色登录账号，可空" />
+        </div>
+      )}
       <div className="form-row">
         <label>备注</label>
         <textarea rows={3} value={fNotes} onChange={(e) => setFNotes(e.target.value)} />
@@ -249,7 +271,7 @@ export function CustomersPage({ toast }: { toast: (msg: string, ok?: boolean) =>
                     <button type="button" className="icon-btn" onClick={() => openDetail(c)} title="客户详情与名下项目/订单">
                       <IconEye size={16} />
                     </button>
-                    {canManage && (
+                    {canEdit && (
                       <button type="button" className="icon-btn" onClick={() => openEdit(c)} title="编辑客户">
                         <IconEdit size={16} />
                       </button>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, hasMinRole, type Customer, type Project, type ProjectDetail } from '../api'
+import { api, getCurrentUser, hasMinRole, hasPage, type Customer, type Project, type ProjectDetail } from '../api'
 import { Modal, ConfirmModal } from '../components/Modal'
 import { IconEye, IconPlus, IconRefresh, IconEdit, IconTrash } from '../components/icons'
 import { orderStatusTone } from './OrdersPage'
@@ -21,7 +21,9 @@ function projectStatusTone(status: string): string {
 }
 
 export function ProjectsPage({ toast }: { toast: (msg: string, ok?: boolean) => void }) {
-  const canManage = hasMinRole('维护员') // 项目写操作需维护员+
+  const canManage = hasPage('projects') // 页面权限=新建/编辑（角色矩阵勾选即可写）
+  const canDelete = hasMinRole('维护员') // 删除仍需维护员+
+  const isStaff = hasMinRole('操作员') // 内部员工；客户角色归属/状态由后端锁定为本人
   const isAdmin = hasMinRole('管理员')
   const [list, setList] = useState<Project[]>([])
   // 项目号 → 订单数（详情接口汇总，列表页展示用）
@@ -76,7 +78,8 @@ export function ProjectsPage({ toast }: { toast: (msg: string, ok?: boolean) => 
   function openCreate() {
     setFProjectNo('')
     setFName('')
-    setFCustomer(customerOptions[0]?.username ?? '')
+    // 客户角色归属锁定为本人（后端强制）；内部员工默认选第一个客户账号
+    setFCustomer(isStaff ? (customerOptions[0]?.username ?? '') : (getCurrentUser()?.username ?? ''))
     setFCustomerId('')
     setFStatus('立项')
     setFNote('')
@@ -235,7 +238,7 @@ export function ProjectsPage({ toast }: { toast: (msg: string, ok?: boolean) => 
                         <IconEdit size={16} />
                       </button>
                     )}
-                    {canManage && (
+                    {canDelete && (
                       <button type="button" className="icon-btn danger" onClick={() => setDeleteTarget(p)} title="删除项目">
                         <IconTrash size={16} />
                       </button>
@@ -271,22 +274,29 @@ export function ProjectsPage({ toast }: { toast: (msg: string, ok?: boolean) => 
             <label>名称</label>
             <input value={fName} onChange={(e) => setFName(e.target.value)} required />
           </div>
-          <div className="form-row">
-            <label>客户档案</label>
-            {customerProfileField}
-          </div>
-          <div className="form-row">
-            <label>客户账号</label>
-            {customerField()}
-          </div>
-          <div className="form-row">
-            <label>状态</label>
-            <select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
-              {PROJECT_STATUSES.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </div>
+          {/* 归属与状态仅内部员工可指定；客户角色由后端锁定为本人/默认状态 */}
+          {isStaff && (
+            <div className="form-row">
+              <label>客户档案</label>
+              {customerProfileField}
+            </div>
+          )}
+          {isStaff && (
+            <div className="form-row">
+              <label>客户账号</label>
+              {customerField()}
+            </div>
+          )}
+          {isStaff && (
+            <div className="form-row">
+              <label>状态</label>
+              <select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+                {PROJECT_STATUSES.map((s) => (
+                  <option key={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="form-row">
             <label>备注</label>
             <textarea rows={3} value={fNote} onChange={(e) => setFNote(e.target.value)} />
@@ -316,22 +326,28 @@ export function ProjectsPage({ toast }: { toast: (msg: string, ok?: boolean) => 
             <label>名称</label>
             <input autoFocus value={fName} onChange={(e) => setFName(e.target.value)} required />
           </div>
-          <div className="form-row">
-            <label>客户档案</label>
-            {customerProfileField}
-          </div>
-          <div className="form-row">
-            <label>客户账号</label>
-            {customerField()}
-          </div>
-          <div className="form-row">
-            <label>状态</label>
-            <select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
-              {PROJECT_STATUSES.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </div>
+          {isStaff && (
+            <div className="form-row">
+              <label>客户档案</label>
+              {customerProfileField}
+            </div>
+          )}
+          {isStaff && (
+            <div className="form-row">
+              <label>客户账号</label>
+              {customerField()}
+            </div>
+          )}
+          {isStaff && (
+            <div className="form-row">
+              <label>状态</label>
+              <select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+                {PROJECT_STATUSES.map((s) => (
+                  <option key={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="form-row">
             <label>备注</label>
             <textarea rows={3} value={fNote} onChange={(e) => setFNote(e.target.value)} />

@@ -68,7 +68,7 @@ DEFAULT_USER_PROFILES = {
 DEFAULT_ROLES: dict[str, dict] = {
     Role.customer.value: {"level": 0, "pages": ["portal", "dashboard", "screen"]},
     Role.operator.value: {"level": 1, "pages": ["dashboard", "subsystems", "experiments", "data", "insight", "screen", "schedule", "equipment"]},
-    Role.maintainer.value: {"level": 2, "pages": ["dashboard", "subsystems", "experiments", "data", "insight", "screen", "projects", "customers", "schedule", "settings", "equipment"]},
+    Role.maintainer.value: {"level": 2, "pages": ["dashboard", "subsystems", "experiments", "data", "insight", "screen", "orders", "projects", "customers", "schedule", "settings", "equipment"]},
     Role.admin.value: {"level": 3, "pages": ["portal", "dashboard", "subsystems", "experiments", "data", "insight", "screen", "orders", "projects", "customers", "schedule", "settings", "equipment"]},
 }
 
@@ -202,5 +202,20 @@ def require_roles(*roles: Role):
         if user.role not in roles and user.role != Role.admin:
             raise HTTPException(status_code=403, detail="权限不足")
         return user
+
+    return _dep
+
+
+def require_page(page: str):
+    """页面权限即模块写权限：角色矩阵里勾选该页面的角色可读写此模块。
+
+    用于项目/订单/客户这类业务模块——勾选页面不再只是"只读可见"，
+    同时授予新建/编辑（删除仍由更高级别角色把关）。管理员永远放行。
+    """
+
+    async def _dep(user: Annotated[UserInfo, Depends(current_user)]) -> UserInfo:
+        if user.role == Role.admin.value or page in await role_pages(user.role):
+            return user
+        raise HTTPException(status_code=403, detail="权限不足")
 
     return _dep

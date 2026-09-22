@@ -457,14 +457,14 @@ function UsersRolesPanel({ toast }: { toast: (msg: string, ok?: boolean) => void
                         <input
                           type="checkbox"
                           checked={d.pages.includes(p.key)}
-                          disabled={r.builtin}
+                          disabled={r.builtin && r.name === '管理员'}
                           onChange={(e) => toggleDraftPage(r.name, p.key, e.target.checked)}
                         />
                       </td>
                     ))}
                     <td>
                       <div className="actions actions-flush">
-                        {!r.builtin && (
+                        {(!r.builtin || r.name !== '管理员') && (
                           <button type="button" className="btn" disabled={!roleDirty(r)} onClick={() => saveRole(r.name)}>
                             保存
                           </button>
@@ -486,7 +486,7 @@ function UsersRolesPanel({ toast }: { toast: (msg: string, ok?: boolean) => void
             </tbody>
           </table>
         </div>
-        <div className="hint">内置角色的等级与页面不可修改；自定义角色勾选页面后需点「保存」生效，用户重新登录后导航随之更新。</div>
+        <div className="hint">勾选页面即授予该模块的查看与新建/编辑权限（项目/订单/客户管理等）；删除记录仍需维护员及以上。客户角色只能操作本人名下的项目/订单、编辑本人档案的联系方式。「管理员」角色锁定不可修改以防失锁；其他角色改动需点「保存」生效，用户重新登录后导航随之更新。</div>
       </div>
 
       {/* 新建用户弹窗 */}

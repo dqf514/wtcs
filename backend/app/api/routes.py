@@ -25,6 +25,7 @@ from app.core.auth import (
     current_user,
     decode_token,
     hash_password,
+    require_page,
     require_roles,
     role_level,
     role_pages,
@@ -284,25 +285,53 @@ async def _is_order_staff(user: UserInfo) -> bool:
     return await role_level(user.role) >= 2
 
 
-# ---------- 项目管理（权限与订单一致：客户只读本人、维护员+可写） ----------
+async def _can_view_all(user: UserInfo, page: str) -> bool:
+    """模块全量可见：维护员+，或等级≥1 且角色矩阵勾选了该页面的内部员工。客户永远只看本人。"""
+    level = await role_level(user.role)
+    if level >= 2:
+        return True
+    return level >= 1 and page in await role_pages(user.role)
+
+
+async def _scope_order_write(user: UserInfo, data: dict[str, Any], existing: dict[str, Any] | None = None) -> None:
+    """客户角色（等级<1）写项目/订单时的归属约束，就地修改 data：
+
+    - 新建：归属强制锁定为本人（账号与档案），状态保持默认，防止伪造他人记录或自导状态
+    - 编辑：只允许动本人记录；归属与状态字段一律剥离（只能改标题/备注等业务字段）
+    - 内部员工（等级≥1）不受约束
+    """
+    if await role_level(user.role) >= 1:
+        return
+    if existing is not None and existing.get("customer_username") != user.username:
+        raise HTTPException(403, "只能操作本人名下的记录")
+    for key in ("status", "customer_username", "customer_id"):
+        data.pop(key, None)
+    if existing is None:
+        data["customer_username"] = user.username
+        own = await store.get_customer_by_username(user.username)
+        data["customer_id"] = own["id"] if own else None
+
+
+# ---------- 项目管理（页面权限=新建/编辑；客户仅可动本人记录；删除维护员+） ----------
 
 @router.get("/projects")
 async def list_projects(
     user: Annotated[UserInfo, Depends(current_user)],
     customer: str | None = Query(default=None, description="管理端按客户账号过滤"),
 ):
-    if await _is_order_staff(user):
+    if await _can_view_all(user, "projects"):
         return await store.list_projects(customer_username=customer)
-    # 客户等低等级角色只能看本人项目
+    # 客户只能看本人项目
     return await store.list_projects(customer_username=user.username)
 
 
 @router.post("/projects")
 async def create_project(
     body: ProjectIn,
-    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer))],
+    user: Annotated[UserInfo, Depends(require_page("projects"))],
 ):
     data = body.model_dump()
+    await _scope_order_write(user, data)
     await _resolve_customer_link(data)
     try:
         row = await store.create_project(data)
@@ -318,7 +347,7 @@ async def get_project(project_id: str, user: Annotated[UserInfo, Depends(current
     project = await store.get_project(project_id)
     if not project:
         raise HTTPException(404, "项目不存在")
-    if not await _is_order_staff(user) and project["customer_username"] != user.username:
+    if not await _can_view_all(user, "projects") and project["customer_username"] != user.username:
         raise HTTPException(403, "无权访问该项目")
     orders = await store.list_orders(project_id=project_id)
     for o in orders:
@@ -330,11 +359,14 @@ async def get_project(project_id: str, user: Annotated[UserInfo, Depends(current
 async def update_project(
     project_id: str,
     body: ProjectUpdate,
-    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer))],
+    user: Annotated[UserInfo, Depends(require_page("projects"))],
 ):
-    if await store.get_project(project_id) is None:
+    project = await store.get_project(project_id)
+    if project is None:
         raise HTTPException(404, "项目不存在")
     data = body.model_dump(exclude_none=True)
+    # 客户角色：仅可编辑本人项目，且归属/状态字段被剥离
+    await _scope_order_write(user, data, existing=project)
     # customer_id 传空字符串表示清除客户归属（置 NULL）
     if data.get("customer_id") == "":
         data["customer_id"] = None
@@ -374,20 +406,21 @@ async def list_orders(
     user: Annotated[UserInfo, Depends(current_user)],
     customer: str | None = Query(default=None, description="管理端按客户账号过滤"),
 ):
-    if await _is_order_staff(user):
+    if await _can_view_all(user, "orders"):
         return await store.list_orders(customer_username=customer)
-    # 客户等低等级角色只能看本人订单
+    # 客户只能看本人订单
     return await store.list_orders(customer_username=user.username)
 
 
 @router.post("/orders")
 async def create_order(
     body: OrderIn,
-    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer))],
+    user: Annotated[UserInfo, Depends(require_page("orders"))],
 ):
     if body.project_id and await store.get_project(body.project_id) is None:
         raise HTTPException(400, "关联项目不存在")
     data = body.model_dump()
+    await _scope_order_write(user, data)
     await _resolve_customer_link(data)
     try:
         row = await store.create_order(data)
@@ -403,7 +436,7 @@ async def get_order(order_id: str, user: Annotated[UserInfo, Depends(current_use
     order = await store.get_order(order_id)
     if not order:
         raise HTTPException(404, "订单不存在")
-    if not await _is_order_staff(user) and order["customer_username"] != user.username:
+    if not await _can_view_all(user, "orders") and order["customer_username"] != user.username:
         raise HTTPException(403, "无权访问该订单")
     experiments = await store.list_experiments_by_order(order_id)
     return {**order, "experiments": experiments}
@@ -413,11 +446,14 @@ async def get_order(order_id: str, user: Annotated[UserInfo, Depends(current_use
 async def update_order(
     order_id: str,
     body: OrderUpdate,
-    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer))],
+    user: Annotated[UserInfo, Depends(require_page("orders"))],
 ):
-    if await store.get_order(order_id) is None:
+    order = await store.get_order(order_id)
+    if order is None:
         raise HTTPException(404, "订单不存在")
     data = body.model_dump(exclude_none=True)
+    # 客户角色：仅可编辑本人订单，且归属/状态字段被剥离
+    await _scope_order_write(user, data, existing=order)
     # project_id / customer_id 传空字符串表示清除归属（置 NULL）
     for key in ("project_id", "customer_id"):
         if data.get(key) == "":
@@ -449,7 +485,10 @@ async def delete_order(
     return {"ok": True}
 
 
-# ---------- 客户管理（内部员工可读；维护员+增改；管理员删；客户角色仅见本人档案） ----------
+# ---------- 客户管理（页面权限=新建/编辑；客户角色仅可编辑本人档案的联系方式字段；删除仅管理员） ----------
+
+# 客户角色编辑本人档案时允许改的字段（身份字段 编号/名称/关联账号 仍由内部员工维护）
+CUSTOMER_SELF_EDITABLE = ("contact", "contact_title", "phone", "email", "address", "notes", "industry")
 
 async def _resolve_customer_link(data: dict[str, Any]) -> None:
     """校验 customer_id 存在；档案有关联账号时自动带出到 customer_username。"""
@@ -486,8 +525,11 @@ async def list_customers(user: Annotated[UserInfo, Depends(current_user)]):
 @router.post("/customers")
 async def create_customer(
     body: CustomerIn,
-    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer))],
+    user: Annotated[UserInfo, Depends(require_page("customers"))],
 ):
+    # 新建客户档案是内部业务动作，客户角色即使有页面权限也不能开新档案
+    if await role_level(user.role) < 1:
+        raise HTTPException(403, "客户角色不能新建客户档案")
     await _validate_customer_username(body.username)
     try:
         row = await store.create_customer(body.model_dump())
@@ -515,11 +557,19 @@ async def get_customer(customer_id: str, user: Annotated[UserInfo, Depends(curre
 async def update_customer(
     customer_id: str,
     body: CustomerUpdate,
-    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer))],
+    user: Annotated[UserInfo, Depends(require_page("customers"))],
 ):
-    if await store.get_customer(customer_id) is None:
+    customer = await store.get_customer(customer_id)
+    if customer is None:
         raise HTTPException(404, "客户档案不存在")
     data = body.model_dump(exclude_none=True)
+    if await role_level(user.role) < 1:
+        # 客户角色：仅可编辑关联本人账号的档案，且只能改联系方式类字段
+        if customer.get("username") != user.username:
+            raise HTTPException(403, "只能编辑本人的客户档案")
+        data = {k: v for k, v in data.items() if k in CUSTOMER_SELF_EDITABLE}
+        if not data:
+            raise HTTPException(400, "没有可更新的字段")
     # username 传空字符串表示清除账号关联（置 NULL）
     if data.get("username") == "":
         data["username"] = None
