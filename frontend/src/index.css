@@ -4024,3 +4024,106 @@ html[data-sidebar="expanded"] {
   border-top: 1px solid var(--line);
   margin: 8px 0 2px;
 }
+
+/* ---------- 反馈系统 ---------- */
+/* 右下角悬浮入口：z-index 低于 modal 遮罩(60)、高于侧栏(40)/移动按钮(50) */
+.feedback-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 55;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--muted);
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, transform 0.15s;
+}
+.feedback-fab:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  transform: translateY(-2px);
+}
+/* 截图区：缩略图 + 添加框 */
+.feedback-shots {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.feedback-shot {
+  position: relative;
+  width: 120px;
+  height: 84px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--bg-1);
+}
+.feedback-shot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.feedback-shot-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: #000000a6;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.feedback-shot-add {
+  width: 120px;
+  height: 84px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.feedback-shot-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* 反馈管理（设置页）：状态徽标与截图缩略图 */
+.feedback-thumb {
+  width: 64px;
+  height: 44px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  cursor: zoom-in;
+  display: block;
+}
+.feedback-content-cell {
+  max-width: 420px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 多行输入场景的 label 顶对齐 */
+.form-row--top {
+  align-items: start;
+}
+.form-row--top > label {
+  padding-top: 8px;
+}

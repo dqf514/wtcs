@@ -574,6 +574,17 @@ export function IconWarning(p: IconProps) {
   )
 }
 
+/** 反馈入口：问号气泡 */
+export function IconFeedback(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.4 0-2.7-.3-3.8-.9L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z" />
+      <path d="M9.6 9.2a2.5 2.5 0 0 1 4.9.7c0 1.6-2.4 2-2.4 3.2" />
+      <path d="M12 15.8h.01" />
+    </Svg>
+  )
+}
+
 export const NAV_ICONS: Record<string, (p: IconProps) => ReactElement> = {
   wall: IconWall,
   dashboard: IconDashboard,

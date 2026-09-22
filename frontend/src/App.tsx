@@ -18,6 +18,7 @@ import { StatusBar } from './components/StatusBar'
 import { PageErrorBoundary } from './components/PageErrorBoundary'
 import { FullscreenButton, UserMenu } from './components/UserMenu'
 import { AlertCenterModal } from './components/AlertCenterModal'
+import { FeedbackWidget } from './components/FeedbackWidget'
 import { EStopButton } from './components/EStopButton'
 import { CommandPalette } from './components/CommandPalette'
 import { useTelemetry } from './hooks/useTelemetry'
@@ -439,6 +440,9 @@ function Shell({ user, onLogout }: { user: UserInfo; onLogout: () => void }) {
       <CommandPalette items={navItems} frame={frame} toast={toast} open={cmdkOpen} onClose={() => setCmdkOpen(false)} />
 
       <AlertCenterModal open={alertCenterOpen} onClose={() => setAlertCenterOpen(false)} toast={toast} />
+
+      {/* 全站反馈入口：右下角悬浮按钮（登录后常规界面常驻；kiosk 大屏/弹窗模式不显示） */}
+      <FeedbackWidget toast={toast} />
 
       {toastMsg && (
         <div className={`toast badge ${toastMsg.ok ? 'ok' : 'danger'}`}>{toastMsg.text}</div>

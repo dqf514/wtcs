@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -652,6 +652,129 @@ async def reset_branding(
     await _bump_branding_version()
     await hub.audit.add(user.username, user.role, "恢复默认品牌标识", f"{BRANDING_KINDS[kind]}", None)
     return await get_branding() | {"ok": True}
+
+
+# ---------- 用户反馈（登录可提交，服务端 5 分钟限流；查看/处理仅管理员） ----------
+
+FEEDBACK_DIR = DATA_DIR / "feedback"
+_FEEDBACK_MIN_INTERVAL = 300  # 同一用户两次提交的最小间隔（秒）
+_FEEDBACK_MAX_CONTENT = 2000
+_FEEDBACK_MAX_IMAGE = 5 * 1024 * 1024
+
+
+def _feedback_image(feedback_id: str) -> Path:
+    return FEEDBACK_DIR / f"{feedback_id}.png"
+
+
+@router.post("/feedback")
+async def submit_feedback(
+    user: Annotated[UserInfo, Depends(current_user)],
+    content: str = Form(...),
+    email: str = Form(""),
+    page_url: str = Form(""),
+    screenshot: UploadFile | None = File(None),
+):
+    content = content.strip()
+    if not content:
+        raise HTTPException(400, "请填写问题或建议")
+    if len(content) > _FEEDBACK_MAX_CONTENT:
+        raise HTTPException(400, f"内容不能超过 {_FEEDBACK_MAX_CONTENT} 字")
+    last = await store.last_feedback_at(user.username)
+    if last:
+        try:
+            elapsed = (local_now() - datetime.fromisoformat(last)).total_seconds()
+        except ValueError:
+            elapsed = _FEEDBACK_MIN_INTERVAL
+        if elapsed < _FEEDBACK_MIN_INTERVAL:
+            remain = int(_FEEDBACK_MIN_INTERVAL - elapsed)
+            raise HTTPException(
+                429, f"提交太频繁，请 {remain // 60} 分 {remain % 60} 秒后再试"
+            )
+    row = await store.create_feedback(
+        {
+            "username": user.username,
+            "role": str(user.role),
+            "content": content,
+            "email": email.strip()[:200],
+            "page_url": page_url.strip()[:500],
+        }
+    )
+    if screenshot is not None and screenshot.filename:
+        if (screenshot.content_type or "") not in ("image/png", "image/jpeg", "image/webp"):
+            await store.delete_feedback(row["id"])
+            raise HTTPException(400, "截图仅支持 PNG / JPEG / WebP 图片")
+        data = await screenshot.read()
+        if len(data) > _FEEDBACK_MAX_IMAGE:
+            await store.delete_feedback(row["id"])
+            raise HTTPException(400, "截图不能超过 5MB")
+        try:
+            from PIL import Image
+
+            img = Image.open(io.BytesIO(data))
+            img.load()
+            img.thumbnail((1920, 1920))
+            FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+            img.save(_feedback_image(row["id"]), format="PNG")
+        except ImportError:
+            if screenshot.content_type != "image/png":
+                await store.delete_feedback(row["id"])
+                raise HTTPException(400, "当前环境截图仅支持 PNG")
+            FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+            _feedback_image(row["id"]).write_bytes(data)
+        except Exception as exc:
+            await store.delete_feedback(row["id"])
+            raise HTTPException(400, "截图不是有效的图片文件") from exc
+        row["has_screenshot"] = 1
+        await store.mark_feedback_screenshot(row["id"])
+    await hub.audit.add(user.username, user.role, "提交反馈", content[:60], None)
+    logger.info("用户反馈: %s (%s) %s", user.username, row["id"], content[:40])
+    return {"ok": True, "id": row["id"], "created_at": row["created_at"]}
+
+
+@router.get("/feedback")
+async def list_feedbacks(
+    user: Annotated[UserInfo, Depends(require_roles(Role.admin))],
+    status: str = "",
+):
+    return await store.list_feedbacks(status or None)
+
+
+@router.get("/feedback/{feedback_id}/screenshot")
+async def feedback_screenshot(
+    feedback_id: str,
+    user: Annotated[UserInfo, Depends(require_roles(Role.admin))],
+):
+    path = _feedback_image(feedback_id)
+    if not path.exists():
+        raise HTTPException(404, "截图不存在")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-cache"})
+
+
+@router.put("/feedback/{feedback_id}")
+async def update_feedback(
+    feedback_id: str,
+    body: dict,
+    user: Annotated[UserInfo, Depends(require_roles(Role.admin))],
+):
+    status = str(body.get("status") or "")
+    if status not in ("未处理", "处理中", "已处理"):
+        raise HTTPException(400, "状态无效")
+    if not await store.set_feedback_status(feedback_id, status):
+        raise HTTPException(404, "反馈不存在")
+    return {"ok": True}
+
+
+@router.delete("/feedback/{feedback_id}")
+async def delete_feedback(
+    feedback_id: str,
+    user: Annotated[UserInfo, Depends(require_roles(Role.admin))],
+):
+    if not await store.delete_feedback(feedback_id):
+        raise HTTPException(404, "反馈不存在")
+    path = _feedback_image(feedback_id)
+    if path.exists():
+        path.unlink()
+    return {"ok": True}
 
 
 # ---------- 排程计划（登录可读；客户仅见关联本人项目/订单的条目；写操作维护员+） ----------

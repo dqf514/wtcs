@@ -246,6 +246,18 @@ class Store:
                 day TEXT NOT NULL DEFAULT '',
                 today_sec REAL NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS feedbacks (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                email TEXT NOT NULL DEFAULT '',
+                page_url TEXT NOT NULL DEFAULT '',
+                has_screenshot INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT '未处理',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_feedbacks_user ON feedbacks(username, created_at);
             """
         )
         await self._migrate()
@@ -1018,6 +1030,92 @@ class Store:
         cursor = await c.execute("SELECT COUNT(*) AS n FROM orders WHERE customer_id=?", (customer_id,))
         orders = (await cursor.fetchone())["n"]
         return int(projects), int(orders)
+
+    # ---------- 用户反馈 ----------
+
+    async def create_feedback(self, feedback: dict[str, Any]) -> dict[str, Any]:
+        """创建反馈并返回完整行。截图不落库，由路由层存文件后回填 has_screenshot。"""
+        row = {
+            "id": feedback.get("id") or uuid.uuid4().hex[:12],
+            "username": feedback["username"],
+            "role": feedback.get("role") or "",
+            "content": feedback["content"],
+            "email": feedback.get("email") or "",
+            "page_url": feedback.get("page_url") or "",
+            "has_screenshot": 1 if feedback.get("has_screenshot") else 0,
+            "status": "未处理",
+            "created_at": feedback.get("created_at") or local_now().isoformat(timespec="seconds"),
+        }
+        async with self._lock:
+            c = self._require()
+            await c.execute(
+                "INSERT INTO feedbacks(id, username, role, content, email, page_url, has_screenshot, status, created_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    row["id"],
+                    row["username"],
+                    row["role"],
+                    row["content"],
+                    row["email"],
+                    row["page_url"],
+                    row["has_screenshot"],
+                    row["status"],
+                    row["created_at"],
+                ),
+            )
+            await c.commit()
+        return row
+
+    async def last_feedback_at(self, username: str) -> str | None:
+        """该用户最近一次反馈的 created_at（限流用），无记录返回 None。"""
+        c = self._require()
+        cursor = await c.execute(
+            "SELECT created_at FROM feedbacks WHERE username=? ORDER BY created_at DESC LIMIT 1",
+            (username,),
+        )
+        row = await cursor.fetchone()
+        return row["created_at"] if row else None
+
+    async def mark_feedback_screenshot(self, feedback_id: str) -> None:
+        """截图已落盘后回填 has_screenshot 标记。"""
+        async with self._lock:
+            c = self._require()
+            await c.execute("UPDATE feedbacks SET has_screenshot=1 WHERE id=?", (feedback_id,))
+            await c.commit()
+
+    async def list_feedbacks(self, status: str | None = None) -> list[dict[str, Any]]:
+        """反馈列表（新的在前），可按状态过滤。"""
+        c = self._require()
+        if status:
+            cursor = await c.execute(
+                "SELECT * FROM feedbacks WHERE status=? ORDER BY created_at DESC", (status,)
+            )
+        else:
+            cursor = await c.execute("SELECT * FROM feedbacks ORDER BY created_at DESC")
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_feedback(self, feedback_id: str) -> dict[str, Any] | None:
+        c = self._require()
+        cursor = await c.execute("SELECT * FROM feedbacks WHERE id=?", (feedback_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def set_feedback_status(self, feedback_id: str, status: str) -> bool:
+        async with self._lock:
+            c = self._require()
+            cursor = await c.execute(
+                "UPDATE feedbacks SET status=? WHERE id=?", (status, feedback_id)
+            )
+            await c.commit()
+            return cursor.rowcount > 0
+
+    async def delete_feedback(self, feedback_id: str) -> bool:
+        async with self._lock:
+            c = self._require()
+            cursor = await c.execute("DELETE FROM feedbacks WHERE id=?", (feedback_id,))
+            await c.commit()
+            return cursor.rowcount > 0
 
     # ---------- 排程计划 ----------
 

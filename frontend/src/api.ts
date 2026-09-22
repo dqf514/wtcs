@@ -39,6 +39,20 @@ export interface BrandingInfo {
   custom: { logo: boolean; mark: boolean }
 }
 
+/** 用户反馈 */
+export type FeedbackStatus = '未处理' | '处理中' | '已处理'
+export interface Feedback {
+  id: string
+  username: string
+  role: string
+  content: string
+  email: string
+  page_url: string
+  has_screenshot: 0 | 1
+  status: FeedbackStatus
+  created_at: string
+}
+
 /** 项目 */
 export interface Project {
   id: string
@@ -912,6 +926,32 @@ export const api = {
   },
   resetBranding: (kind: BrandingKind) =>
     request<BrandingInfo>(`/api/branding/${kind}`, { method: 'DELETE' }),
+
+  // ---------- 用户反馈（提交需登录、服务端 5 分钟限流；查看/处理仅管理员） ----------
+  submitFeedback: async (input: { content: string; email?: string; page_url?: string; screenshot?: File | null }): Promise<{ ok: boolean; id: string }> => {
+    const fd = new FormData()
+    fd.append('content', input.content)
+    fd.append('email', input.email ?? '')
+    fd.append('page_url', input.page_url ?? '')
+    if (input.screenshot) fd.append('screenshot', input.screenshot)
+    const headers = new Headers()
+    const token = getToken()
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+    const res = await fetch('/api/feedback', { method: 'POST', headers, body: fd })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new ApiError(parseError(text, res.statusText), res.status)
+    }
+    return res.json() as Promise<{ ok: boolean; id: string }>
+  },
+  listFeedbacks: (status?: FeedbackStatus) =>
+    request<Feedback[]>(`/api/feedback${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  updateFeedback: (id: string, status: FeedbackStatus) =>
+    request<{ ok: boolean }>(`/api/feedback/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ status }) }),
+  deleteFeedback: (id: string) =>
+    request<{ ok: boolean }>(`/api/feedback/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** 反馈截图 URL（需 Authorization，用 <img> 直链不行，得 fetch 成 blob；这里仅拼路径） */
+  feedbackScreenshotUrl: (id: string) => `/api/feedback/${encodeURIComponent(id)}/screenshot`,
 
   // ---------- 排程计划（客户自动过滤为关联本人的条目） ----------
   listSchedules: (params: { from?: string; to?: string } = {}) => {

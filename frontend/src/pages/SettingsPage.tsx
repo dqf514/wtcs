@@ -15,12 +15,13 @@ import { useTheme } from '../theme'
 import { ALARM_SOUND_KEY } from '../constants'
 import { Tabs } from '../components/Tabs'
 import { BrandingPanel } from '../components/BrandingPanel'
+import { FeedbackPanel } from '../components/FeedbackPanel'
 import { Modal, ConfirmModal } from '../components/Modal'
 import { IconDownload, IconEdit, IconEye, IconPlus, IconRestore, IconTrash } from '../components/icons'
 
 const SCENARIOS = ['气动实验', '声学实验', 'WLTP滑行', '参观演示']
 
-type TabKey = 'general' | 'telemetry' | 'backup' | 'network' | 'ai' | 'system' | 'users'
+type TabKey = 'general' | 'telemetry' | 'backup' | 'network' | 'ai' | 'system' | 'users' | 'feedback'
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'general', label: '通用' },
@@ -30,6 +31,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'ai', label: 'AI 与健康' },
   { key: 'system', label: '系统' },
   { key: 'users', label: '用户与权限' },
+  { key: 'feedback', label: '用户反馈' },
 ]
 
 /** 角色矩阵的页面列（与后端页面 key 全集一致） */
@@ -868,7 +870,7 @@ export function SettingsPage({ toast }: { toast: (msg: string, ok?: boolean) => 
         </div>
       </header>
       <Tabs
-        tabs={TABS.filter((t) => t.key !== 'users' || isAdmin)}
+        tabs={TABS.filter((t) => (t.key !== 'users' && t.key !== 'feedback') || isAdmin)}
         value={tab}
         onChange={(k) => setTab(k as TabKey)}
         ariaLabel="设置分组"
@@ -1198,6 +1200,7 @@ export function SettingsPage({ toast }: { toast: (msg: string, ok?: boolean) => 
       )}
 
       {tab === 'users' && isAdmin && <UsersRolesPanel toast={toast} />}
+      {tab === 'feedback' && isAdmin && <FeedbackPanel toast={toast} />}
 
       <ConfirmModal
         open={!!confirm}
