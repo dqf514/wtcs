@@ -201,6 +201,9 @@ export function InterlocksPage({ toast }: { toast: (msg: string, ok?: boolean) =
       <div className="hint" style={{ marginTop: 10 }}>
         <IconSafety size={13} /> 表达式变量形如 <span className="mono">子系统.测点</span>（如 {VAR_HINTS.slice(0, 2).join('、')}），另支持 running/ready/fault 状态量；支持 and/or/not、比较、四则运算、abs/min/max。修改即时生效并写审计。
       </div>
+      <div className="hint" style={{ marginTop: 6 }}>
+        <IconSafety size={13} /> 挂牌检修（LOTO，子系统页操作）：挂牌子系统的控制指令一律被拒并留痕；挂牌辅机不参与系统就绪判定，主风机挂牌时系统不可开车。
+      </div>
 
       {/* 新建 / 编辑弹窗 */}
       <Modal

@@ -45,14 +45,18 @@ def compute_system_state(
     safety: str,
     sequence_kind: str | None,
     required_aux: list[str] | None = None,
+    lockouts: set[str] | None = None,
 ) -> dict[str, Any]:
     """由子系统状态聚合系统级状态。
 
     statuses: snapshot() 里的子系统状态字典列表（id/running/ready/fault）。
     sequence_kind: 正在执行的序列类型（startup/shutdown），无则 None。
+    lockouts: 挂牌检修（LOTO）的子系统 id 集——挂牌辅机从就绪判定中摘除；主风机挂牌则系统不可开车。
     """
-    required = required_aux or DEFAULT_REQUIRED_AUX
+    lockouts = lockouts or set()
+    required = [sid for sid in (required_aux or DEFAULT_REQUIRED_AUX) if sid not in lockouts]
     by_id = {s["id"]: s for s in statuses}
+    fan_locked = "main_fan" in lockouts
 
     if safety == "急停":
         state = "e_stop"
@@ -65,7 +69,7 @@ def compute_system_state(
         aux_unready = [sid for sid in required if not by_id.get(sid, {}).get("running")]
         if fan_running:
             state = "running"
-        elif not aux_unready and sequence_kind is None:
+        elif not aux_unready and not fan_locked and sequence_kind is None:
             state = "ready"
         elif sequence_kind == "startup" or (aux_unready and len(aux_unready) < len(required)):
             # 部分辅机已运行或开车序列执行中
@@ -75,6 +79,9 @@ def compute_system_state(
 
     meta = SYSTEM_STATES[state]
     unready_names = [by_id.get(sid, {}).get("name", sid) for sid in required if not by_id.get(sid, {}).get("running")]
+    # 主风机挂牌：就绪无望，徽章 title 明示原因
+    if fan_locked and state in ("standby", "preparing"):
+        unready_names.append(f"{by_id.get('main_fan', {}).get('name', '主风机系统')}（挂牌检修）")
     return {
         "state": state,
         "label": meta["label"],

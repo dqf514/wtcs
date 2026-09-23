@@ -167,6 +167,15 @@ export interface CommandActiveItem {
   elapsed_s: number
 }
 
+/** 挂牌/维护模式（LOTO）记录 */
+export interface LockoutInfo {
+  subsystem_id: string
+  active: boolean
+  reason: string
+  tag_by: string
+  tagged_at: string
+}
+
 /** 参数联动建议项 */
 export interface LinkageItem {
   id: string
@@ -830,6 +839,12 @@ export const api = {
     return request<CommandOrder[]>(`/api/commands/history${suffix}`)
   },
   commandsActive: () => request<CommandOrder[]>('/api/commands/active'),
+  // ---------- 挂牌/维护模式（LOTO） ----------
+  lockouts: () => request<LockoutInfo[]>('/api/lockout'),
+  tagLockout: (sid: string, reason: string) =>
+    request<LockoutInfo>(`/api/lockout/${encodeURIComponent(sid)}`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  untagLockout: (sid: string) =>
+    request<{ ok: boolean }>(`/api/lockout/${encodeURIComponent(sid)}`, { method: 'DELETE' }),
   connectivityOne: (id: string) =>
     request<ConnectivityReport>(`/api/subsystems/${id}/connectivity-test`, { method: 'POST' }),
   connectivityAll: () =>

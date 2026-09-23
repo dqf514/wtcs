@@ -28,6 +28,7 @@ import { FanSchematic } from '../components/schematics/FanSchematic'
 import { CoolingSchematic } from '../components/schematics/CoolingSchematic'
 import { CommandButton } from '../components/CommandButton'
 import { ToggleCommandButton } from '../components/ToggleCommandButton'
+import { Modal, ConfirmModal } from '../components/Modal'
 import type { CommandSpec } from '../api'
 
 /** 启停命令对：start/stop、start_belt/stop_belt、start_acquire/stop_acquire 合并为一个状态感知按钮 */
@@ -163,6 +164,11 @@ export function SubsystemsPage({ toast }: { toast: (msg: string, ok?: boolean) =
   const canTest = hasMinRole('操作员')
   const canSwitch = hasMinRole('维护员')
 
+  // 挂牌/维护模式（LOTO）：挂牌中禁用命令区，维护员+ 可挂牌/摘牌
+  const [tagOpen, setTagOpen] = useState(false)
+  const [tagReason, setTagReason] = useState('')
+  const [untagOpen, setUntagOpen] = useState(false)
+
   // 右栏态势：健康基线 + 未确认告警（5s 轮询，仅详情视图）
   const [health, setHealth] = useState<TwinHealthReport | null>(null)
   const [alerts, setAlerts] = useState<AiAlert[]>([])
@@ -234,6 +240,30 @@ export function SubsystemsPage({ toast }: { toast: (msg: string, ok?: boolean) =
   )
   const current = detail && detail.id === id ? { ...detail, ...live, points: live?.points ?? detail.points } : live
   const canCommand = hasMinRole('操作员')
+  // 当前子系统的生效挂牌（LOTO）
+  const lockout = frame?.lockouts?.find((l) => l.subsystem_id === id && l.active) ?? null
+
+  async function doTag() {
+    if (!id) return
+    try {
+      await api.tagLockout(id, tagReason.trim())
+      toast(`「${current?.name ?? id}」已挂牌检修，控制指令已冻结`)
+      setTagOpen(false)
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '挂牌失败', false)
+    }
+  }
+
+  async function doUntag() {
+    if (!id) return
+    try {
+      await api.untagLockout(id)
+      toast(`「${current?.name ?? id}」已摘牌，恢复控制`)
+      setUntagOpen(false)
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '摘牌失败', false)
+    }
+  }
   const visibleCommands = useMemo(
     () =>
       (current?.contract?.commands || detail?.contract?.commands || []).filter((c) =>
@@ -402,10 +432,24 @@ export function SubsystemsPage({ toast }: { toast: (msg: string, ok?: boolean) =
                   <div className="sub-head-title">
                     <strong>{current.name}</strong>
                     <span className="badge info">{current.mode === 'simulation' ? '仿真' : '真机'}</span>
-                    <span className={`badge ${current.fault ? 'danger' : current.ready ? 'ok' : 'warn'}`}>
-                      {current.fault ? '故障' : current.ready ? '就绪' : current.state}
-                    </span>
+                    {lockout ? (
+                      <span className="badge danger" title={`${lockout.tag_by} · ${lockout.tagged_at.replace('T', ' ')}`}>
+                        挂牌检修{lockout.reason ? `：${lockout.reason}` : ''}
+                      </span>
+                    ) : (
+                      <span className={`badge ${current.fault ? 'danger' : current.ready ? 'ok' : 'warn'}`}>
+                        {current.fault ? '故障' : current.ready ? '就绪' : current.state}
+                      </span>
+                    )}
                     {current.local_debug && <span className="badge warn">本地调试</span>}
+                    {/* 挂牌/摘牌入口（维护员+；安全连锁子系统不参与挂牌，急停通道永远畅通） */}
+                    {canSwitch && id !== 'safety' && (
+                      lockout ? (
+                        <button type="button" className="btn" onClick={() => setUntagOpen(true)}>摘牌恢复</button>
+                      ) : (
+                        <button type="button" className="btn danger" onClick={() => { setTagReason(''); setTagOpen(true) }}>挂牌检修</button>
+                      )
+                    )}
                   </div>
                   {(current.contract?.description || detail?.contract?.description) && (
                     <p className="panel-desc sub-head-desc">{current.contract?.description || detail?.contract?.description}</p>
@@ -479,6 +523,7 @@ export function SubsystemsPage({ toast }: { toast: (msg: string, ok?: boolean) =
                   <div className="sub-sec-head">
                     <span className="label-cap">命令</span>
                     <span className="mono text-dim">{visibleCommands.length}</span>
+                    {lockout && <span className="badge danger">挂牌检修中，指令已冻结</span>}
                   </div>
                   {!visibleCommands.length && <div className="empty">该子系统没有当前角色可执行的命令</div>}
                   <div className="cmd-grid">
@@ -494,6 +539,7 @@ export function SubsystemsPage({ toast }: { toast: (msg: string, ok?: boolean) =
                           running={pairRunning(current.points, entry.start.name)}
                           startLabel={entry.start.label}
                           stopLabel={entry.stop.label}
+                          disabled={!!lockout}
                           onStart={() => runCmd(entry.start.name, entry.start.params, true)}
                           onStop={() => runCmd(entry.stop.name, entry.stop.params, true)}
                         />
@@ -535,6 +581,8 @@ export function SubsystemsPage({ toast }: { toast: (msg: string, ok?: boolean) =
                       })}
                       <CommandButton
                         variant={entry.cmd.require_confirm ? 'danger' : 'primary'}
+                        disabled={!!lockout}
+                        title={lockout ? '已挂牌检修，禁止下发指令' : undefined}
                         confirmMessage={
                           entry.cmd.require_confirm
                             ? `确认对「${current.name}」执行「${entry.cmd.label}」？`
@@ -700,6 +748,43 @@ export function SubsystemsPage({ toast }: { toast: (msg: string, ok?: boolean) =
           </div>
         </aside>
       </div>
+
+      {/* 挂牌：填写检修原因（LOTO） */}
+      <Modal
+        open={tagOpen}
+        onClose={() => setTagOpen(false)}
+        title={`挂牌检修 — ${current?.name ?? id}`}
+        footer={
+          <>
+            <button type="button" className="btn" onClick={() => setTagOpen(false)}>取消</button>
+            <button type="button" className="btn danger" onClick={() => void doTag()}>确认挂牌</button>
+          </>
+        }
+      >
+        <div className="hint" style={{ marginBottom: 8 }}>
+          挂牌后该子系统的一切控制指令（含 API 直调）将被拒绝并留痕；挂牌辅机不参与系统就绪判定，主风机挂牌则系统不可开车。
+        </div>
+        <div className="form-row">
+          <label>检修原因</label>
+          <input
+            className="field"
+            value={tagReason}
+            onChange={(e) => setTagReason(e.target.value)}
+            maxLength={80}
+            placeholder="如：更换滤芯 / 轴承检修"
+            autoFocus
+          />
+        </div>
+      </Modal>
+
+      <ConfirmModal
+        open={untagOpen}
+        onClose={() => setUntagOpen(false)}
+        onConfirm={() => void doUntag()}
+        title={`摘牌恢复 — ${current?.name ?? id}`}
+        message={`确认摘除「${current?.name ?? id}」的检修挂牌？摘牌后该子系统恢复控制。${lockout ? `（${lockout.tag_by} 挂牌：${lockout.reason || '维护中'}）` : ''}`}
+        confirmLabel="摘牌恢复"
+      />
     </div>
   )
 }

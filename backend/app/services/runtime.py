@@ -368,6 +368,8 @@ class RuntimeHub:
         self._cmd_active: dict[str, dict[str, Any]] = {}
         self._cmd_timeout_alerted: set[str] = set()
         self._cmd_scan_counter = 0
+        # 挂牌/维护模式（LOTO）：active 挂牌的内存缓存（subsystem_id → 行），启动时从库恢复
+        self._lockouts: dict[str, dict[str, Any]] = {}
 
     async def start(self) -> None:
         await self.refresh_settings()
@@ -384,6 +386,12 @@ class RuntimeHub:
         await self._load_equipment_runtime()
         await seed_sequences()
         await seed_interlocks()
+        # 挂牌状态恢复（重启不丢 LOTO）
+        try:
+            for row in await store.list_lockouts(active_only=True):
+                self._lockouts[row["subsystem_id"]] = row
+        except Exception:  # noqa: BLE001
+            logger.exception("挂牌状态恢复失败")
         self._task = asyncio.create_task(self._loop())
         self._ai_task = asyncio.create_task(self._ai_loop())
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
@@ -642,13 +650,14 @@ class RuntimeHub:
                     }
                 )
         overview = await self.overview()
-        # 系统级状态机：由刚采集的子系统状态聚合（辅机清单可在设置中覆盖）
+        # 系统级状态机：由刚采集的子系统状态聚合（辅机清单可在设置中覆盖；挂牌辅机摘除、主风机挂牌不可开车）
         required = self.live_settings.get("ready_required_subsystems")
         self.system_state = compute_system_state(
             statuses,
             self.safety.value,
             self.sequences.active_kind,
             required if isinstance(required, list) else None,
+            set(self._lockouts),
         )
         # 联锁矩阵：同一帧测点值求值（迁移沿触发告警/自动停车；恢复沿自动关闭联锁告警）
         # 变量空间 = 测点 + 顶层状态（running/ready/fault），如 cooling_water.running
@@ -675,6 +684,8 @@ class RuntimeHub:
             "system_state": self.system_state,
             "sequence_exec": self.sequences.snapshot(),
             "interlocks": self.interlocks.status,
+            # 挂牌/维护模式（LOTO）：active 挂牌清单（前端角标/按钮置灰用）
+            "lockouts": list(self._lockouts.values()),
             # 进行中命令队列（accepted 未闭环；仿真同步回执通常为空，真机挂起时可见）
             "commands_active": [
                 {k: v for k, v in o.items() if k != "_t0"} | {"elapsed_s": round(time.monotonic() - o["_t0"], 1)}
@@ -727,6 +738,23 @@ class RuntimeHub:
         token = uuid.uuid4().hex
         self._confirm_tokens[token] = req
         return token
+
+    async def tag_lockout(self, subsystem_id: str, reason: str, user: str, role: Role) -> dict[str, Any]:
+        """挂牌：子系统进入维护模式，此后其控制指令一律被拒（execute_command 开头拦截）。"""
+        row = await store.tag_lockout(subsystem_id, reason, user)
+        self._lockouts[subsystem_id] = row
+        await self.audit.add(user, role, "挂牌", f"{subsystem_id} 挂牌检修：{reason or '维护中'}", subsystem_id)
+        logger.warning("挂牌: %s by %s — %s", subsystem_id, user, reason or "维护中")
+        return row
+
+    async def untag_lockout(self, subsystem_id: str, user: str, role: Role) -> bool:
+        """摘牌：恢复子系统控制。"""
+        ok = await store.untag_lockout(subsystem_id)
+        if ok:
+            self._lockouts.pop(subsystem_id, None)
+            await self.audit.add(user, role, "摘牌", f"{subsystem_id} 摘牌恢复控制", subsystem_id)
+            logger.warning("摘牌: %s by %s", subsystem_id, user)
+        return ok
 
     async def execute_command(self, req: CommandRequest, user: str, role: Role) -> CommandResult:
         """指令网关：全生命周期建单（command_orders）——入口建单、回执闭环、拒绝留痕、超时告警。
@@ -787,6 +815,16 @@ class RuntimeHub:
                 await open_order()
                 await close_order("rejected", "系统处于急停状态，仅允许安全相关操作")
                 return CommandResult(ok=False, message="系统处于急停状态，仅允许安全相关操作")
+
+        # 挂牌/维护模式（LOTO）：挂牌子系统拒绝一切控制指令（安全连锁指令除外，急停通道永远畅通）
+        if req.subsystem_id != SubsystemId.safety and req.subsystem_id.value in self._lockouts:
+            lo = self._lockouts[req.subsystem_id.value]
+            lo_msg = f"子系统已挂牌检修（{lo['tag_by']}：{lo['reason'] or '维护中'}），禁止下发指令"
+            await self.audit.add(user, role, "挂牌拦截", f"{req.subsystem_id.value}.{req.command}：{lo_msg}", req.subsystem_id.value)
+            logger.warning("挂牌拦截: %s → %s.%s", user, req.subsystem_id.value, req.command)
+            await open_order()
+            await close_order("rejected", lo_msg)
+            return CommandResult(ok=False, message=lo_msg)
 
         contract = registry.get(req.subsystem_id).contract
         cmd_spec = next((c for c in contract.commands if c.name == req.command), None)

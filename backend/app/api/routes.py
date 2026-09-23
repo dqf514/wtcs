@@ -1287,6 +1287,40 @@ async def commands_active(user: Annotated[UserInfo, Depends(current_user)]):
     return await store.list_active_command_orders()
 
 
+# ---------- 挂牌/维护模式（LOTO） ----------
+
+class LockoutIn(BaseModel):
+    reason: str = ""
+
+
+@router.get("/lockout")
+async def list_lockout(user: Annotated[UserInfo, Depends(current_user)]):
+    """当前生效的挂牌清单。"""
+    return await store.list_lockouts(active_only=True)
+
+
+@router.post("/lockout/{subsystem_id}")
+async def tag_lockout(
+    subsystem_id: SubsystemId,
+    body: LockoutIn,
+    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer, Role.admin))],
+):
+    """挂牌：子系统进入维护模式，其控制指令一律被拒（含 API 直调）。"""
+    return await hub.tag_lockout(subsystem_id.value, body.reason.strip(), user.username, user.role)
+
+
+@router.delete("/lockout/{subsystem_id}")
+async def untag_lockout(
+    subsystem_id: SubsystemId,
+    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer, Role.admin))],
+):
+    """摘牌：恢复子系统控制。"""
+    ok = await hub.untag_lockout(subsystem_id.value, user.username, user.role)
+    if not ok:
+        raise HTTPException(404, "该子系统未挂牌")
+    return {"ok": True}
+
+
 # ---------- 客户数据隔离：客户仅能访问归属本人订单的实验 / run / 报告 ----------
 
 def _is_customer(user: UserInfo) -> bool:

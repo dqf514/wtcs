@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getToken, setToken, setCurrentUser, type AiAlert, type CommandActiveItem, type InterlockStatus, type Overview, type SequenceExecution, type SubsystemStatus, type SystemStateInfo } from '../api'
+import { getToken, setToken, setCurrentUser, type AiAlert, type CommandActiveItem, type InterlockStatus, type LockoutInfo, type Overview, type SequenceExecution, type SubsystemStatus, type SystemStateInfo } from '../api'
 
 export interface TelemetryFrame {
   overview: Overview
@@ -13,6 +13,8 @@ export interface TelemetryFrame {
   interlocks?: InterlockStatus[]
   /** 进行中命令队列（已建单未闭环；仿真同步回执通常为空） */
   commands_active?: CommandActiveItem[]
+  /** 挂牌/维护模式（LOTO）：当前生效的挂牌清单 */
+  lockouts?: LockoutInfo[]
   server_time: string
 }
 

@@ -150,12 +150,16 @@ function QuickToggle({
   running,
   startCmd,
   stopCmd,
+  disabled,
+  disabledTitle,
   onSend,
 }: {
   name: string
   running: boolean | null
   startCmd?: string
   stopCmd?: string
+  disabled?: boolean
+  disabledTitle?: string
   onSend: (cmd: string) => void
 }) {
   const [confirming, setConfirming] = useState(false)
@@ -168,7 +172,8 @@ function QuickToggle({
       <button
         type="button"
         className={`sub-card-quick ${isRunning ? 'danger' : 'primary'}`}
-        title={`${action}${name}（按当前默认参数）`}
+        disabled={disabled}
+        title={disabled && disabledTitle ? disabledTitle : `${action}${name}（按当前默认参数）`}
         aria-label={`${action}${name}`}
         onClick={() => setConfirming(true)}
       >
@@ -252,6 +257,11 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
   const subsystems = useMemo(() => frame?.subsystems ?? [], [frame])
   const canCommand = hasMinRole('操作员')
   const canMaintain = hasMinRole('维护员')
+  // 挂牌/维护模式（LOTO）：挂牌子系统卡片加角标、快速启停置灰
+  const lockoutMap = useMemo(
+    () => new Map((frame?.lockouts ?? []).map((l) => [l.subsystem_id, l])),
+    [frame],
+  )
   const mainFan = subsystems.find((s) => s.id === 'main_fan')
   const rrs = subsystems.find((s) => s.id === 'rrs')
   const bl = subsystems.find((s) => s.id === 'boundary_layer')
@@ -602,11 +612,12 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
               const Icon = SUBSYSTEM_ICONS[s.id] ?? IconSubsystems
               const readings = keyReadings(s.points ?? [], 2)
               const quick = QUICK_CMD[s.id]
+              const lockout = lockoutMap.get(s.id)
               return (
                 <div
                   key={s.id}
                   className="sub-card"
-                  title={`${s.name} · ${s.mode === 'simulation' ? '仿真' : '真机'} · ${s.state}${s.fault ? ` · ${s.fault_message}` : ''}`}
+                  title={lockout ? `挂牌检修：${lockout.tag_by} · ${lockout.reason || '维护中'}` : `${s.name} · ${s.mode === 'simulation' ? '仿真' : '真机'} · ${s.state}${s.fault ? ` · ${s.fault_message}` : ''}`}
                   onClick={(e) => {
                     // 快速启停按钮与其确认弹窗的点击不触发卡片跳转
                     if ((e.target as HTMLElement).closest('.modal-overlay, .sub-card-quick')) return
@@ -619,15 +630,21 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
                       <div className="sub-card-name">{s.name}</div>
                       <div className="sub-card-meta">{s.mode === 'simulation' ? '仿真' : '真机'}</div>
                     </div>
-                    <span className={`sub-card-status badge ${s.fault ? 'danger' : s.ready ? '' : 'warn'}`}>
-                      {s.fault ? '故障' : s.ready ? '就绪' : s.state}
-                    </span>
+                    {lockout ? (
+                      <span className="sub-card-status badge danger">挂牌检修</span>
+                    ) : (
+                      <span className={`sub-card-status badge ${s.fault ? 'danger' : s.ready ? '' : 'warn'}`}>
+                        {s.fault ? '故障' : s.ready ? '就绪' : s.state}
+                      </span>
+                    )}
                     {canCommand && quick && (
                       <QuickToggle
                         name={quick.label}
                         running={quickRunning(s.points, quick.kind)}
                         startCmd={quick.start}
                         stopCmd={quick.stop}
+                        disabled={!!lockout}
+                        disabledTitle="已挂牌检修，禁止操作"
                         onSend={(cmd) => send(s.id, cmd, {}, { confirmed: true })}
                       />
                     )}

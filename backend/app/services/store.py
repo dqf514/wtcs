@@ -283,6 +283,13 @@ class Store:
                 finished_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_command_orders_created ON command_orders(created_at);
+            CREATE TABLE IF NOT EXISTS lockout (
+                subsystem_id TEXT PRIMARY KEY,
+                active INTEGER NOT NULL DEFAULT 1,
+                reason TEXT NOT NULL DEFAULT '',
+                tag_by TEXT NOT NULL DEFAULT '',
+                tagged_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS interlocks (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -1336,6 +1343,52 @@ class Store:
         )
         row = await cursor.fetchone()
         return self._cmd_row(row) if row else None
+
+    # ---------- 挂牌/维护模式（LOTO） ----------
+
+    @staticmethod
+    def _lockout_row(r: Any) -> dict[str, Any]:
+        row = dict(r)
+        row["active"] = bool(row["active"])
+        return row
+
+    async def tag_lockout(self, subsystem_id: str, reason: str, tag_by: str) -> dict[str, Any]:
+        """挂牌：子系统进入维护模式（重复挂牌覆盖原因/操作人/时间，相当于换牌）。"""
+        now = local_now().isoformat(timespec="seconds")
+        async with self._lock:
+            c = self._require()
+            await c.execute(
+                "INSERT OR REPLACE INTO lockout(subsystem_id, active, reason, tag_by, tagged_at)"
+                " VALUES(?,1,?,?,?)",
+                (subsystem_id, reason, tag_by, now),
+            )
+            await c.commit()
+        return (await self.get_lockout(subsystem_id)) or {}
+
+    async def untag_lockout(self, subsystem_id: str) -> bool:
+        """摘牌：active 置 0（行保留作留痕，审计记录摘牌动作）。"""
+        async with self._lock:
+            c = self._require()
+            cursor = await c.execute(
+                "UPDATE lockout SET active=0 WHERE subsystem_id=? AND active=1", (subsystem_id,)
+            )
+            await c.commit()
+            return cursor.rowcount > 0
+
+    async def get_lockout(self, subsystem_id: str) -> dict[str, Any] | None:
+        c = self._require()
+        cursor = await c.execute("SELECT * FROM lockout WHERE subsystem_id=?", (subsystem_id,))
+        row = await cursor.fetchone()
+        return self._lockout_row(row) if row else None
+
+    async def list_lockouts(self, active_only: bool = True) -> list[dict[str, Any]]:
+        c = self._require()
+        sql = "SELECT * FROM lockout"
+        if active_only:
+            sql += " WHERE active=1"
+        sql += " ORDER BY tagged_at DESC"
+        cursor = await c.execute(sql)
+        return [self._lockout_row(r) for r in await cursor.fetchall()]
 
     # ---------- 联锁矩阵 ----------
 
