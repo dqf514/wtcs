@@ -290,6 +290,16 @@ class Store:
                 tag_by TEXT NOT NULL DEFAULT '',
                 tagged_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS experiment_sequences (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                steps TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS interlocks (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -1389,6 +1399,61 @@ class Store:
         sql += " ORDER BY tagged_at DESC"
         cursor = await c.execute(sql)
         return [self._lockout_row(r) for r in await cursor.fetchall()]
+
+    # ---------- 试验序列编排（实验工况步序列） ----------
+
+    @staticmethod
+    def _exp_seq_row(r: Any) -> dict[str, Any]:
+        row = dict(r)
+        row["steps"] = json.loads(row["steps"])
+        return row
+
+    async def get_experiment_sequence(self, seq_id: str) -> dict[str, Any] | None:
+        c = self._require()
+        cursor = await c.execute("SELECT * FROM experiment_sequences WHERE id=?", (seq_id,))
+        row = await cursor.fetchone()
+        return self._exp_seq_row(row) if row else None
+
+    async def list_experiment_sequences(self) -> list[dict[str, Any]]:
+        c = self._require()
+        cursor = await c.execute("SELECT * FROM experiment_sequences ORDER BY created_at")
+        rows = await cursor.fetchall()
+        return [self._exp_seq_row(r) for r in rows]
+
+    async def upsert_experiment_sequence(
+        self,
+        seq_id: str,
+        name: str,
+        description: str,
+        steps: list[dict[str, Any]],
+        created_by: str = "",
+    ) -> dict[str, Any]:
+        """新建或更新试验序列；更新时 version 自增（配置留痕）。"""
+        now = local_now().isoformat(timespec="seconds")
+        async with self._lock:
+            c = self._require()
+            cursor = await c.execute("SELECT version, created_at, created_by FROM experiment_sequences WHERE id=?", (seq_id,))
+            old = await cursor.fetchone()
+            if old is None:
+                await c.execute(
+                    "INSERT INTO experiment_sequences(id, name, description, steps, version, created_by, created_at, updated_at)"
+                    " VALUES(?,?,?,?,1,?,?,?)",
+                    (seq_id, name, description, json.dumps(steps, ensure_ascii=False), created_by, now, now),
+                )
+            else:
+                await c.execute(
+                    "UPDATE experiment_sequences SET name=?, description=?, steps=?, version=?, updated_at=? WHERE id=?",
+                    (name, description, json.dumps(steps, ensure_ascii=False), int(old["version"]) + 1, now, seq_id),
+                )
+            await c.commit()
+        return (await self.get_experiment_sequence(seq_id)) or {}
+
+    async def delete_experiment_sequence(self, seq_id: str) -> bool:
+        async with self._lock:
+            c = self._require()
+            cursor = await c.execute("DELETE FROM experiment_sequences WHERE id=?", (seq_id,))
+            await c.commit()
+            return cursor.rowcount > 0
 
     # ---------- 联锁矩阵 ----------
 

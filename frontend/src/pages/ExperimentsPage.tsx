@@ -16,6 +16,7 @@ import { Tabs } from '../components/Tabs'
 import { Modal, ConfirmModal } from '../components/Modal'
 import { MatrixPanel } from '../components/MatrixPanel'
 import { ProfilePanel } from '../components/ProfilePanel'
+import { ExpSequencePanel } from '../components/ExpSequencePanel'
 import { IconPlus, IconRefresh, IconEye, IconAbort, IconPlay, IconReports } from '../components/icons'
 
 const SCENARIOS = ['气动实验', '声学实验', 'WLTP滑行', '参观演示']
@@ -71,7 +72,7 @@ export function ExperimentsPage({ toast }: { toast: (msg: string, ok?: boolean) 
   const [searchParams, setSearchParams] = useSearchParams()
   const [tab, setTab] = useState(() => {
     const t = searchParams.get('tab')
-    return t === 'matrices' || t === 'profiles' ? t : 'experiments'
+    return t === 'matrices' || t === 'profiles' || t === 'sequences' ? t : 'experiments'
   })
   const [list, setList] = useState<Experiment[]>([])
   // 订单绑定：新建实验可挂到订单下，列表展示订单号
@@ -289,6 +290,7 @@ export function ExperimentsPage({ toast }: { toast: (msg: string, ok?: boolean) 
           { key: 'experiments', label: '实验' },
           { key: 'matrices', label: '试验矩阵' },
           { key: 'profiles', label: '风速程控' },
+          { key: 'sequences', label: '序列编排' },
         ]}
         value={tab}
         onChange={setTab}
@@ -298,6 +300,8 @@ export function ExperimentsPage({ toast }: { toast: (msg: string, ok?: boolean) 
       {tab === 'matrices' && <MatrixPanel toast={toast} onOpenRun={openRunFromMatrix} />}
 
       {tab === 'profiles' && <ProfilePanel toast={toast} />}
+
+      {tab === 'sequences' && <ExpSequencePanel toast={toast} />}
 
       {tab === 'experiments' && (
         <>

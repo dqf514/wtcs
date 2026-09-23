@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from app.adapters.registry import registry
 from app.core.auth import ROLE_ORDER
 from app.core.config import settings
-from app.services.orchestration import SequenceEngine, compute_system_state, seed_sequences
+from app.services.orchestration import ExperimentSequenceEngine, SequenceEngine, compute_system_state, seed_sequences, validate_exp_steps
 from app.services.interlocks import InterlockEngine, seed_interlocks
 from app.services.coordination import validate_params
 from app.models.schemas import (
@@ -347,6 +347,14 @@ class RuntimeHub:
         # 系统级状态机（派生态，snapshot 时重算）与启停序列引擎
         self.system_state: dict[str, Any] = {"state": "standby", "label": "待机", "tone": "dim", "unready_aux": [], "since": ""}
         self.sequences = SequenceEngine(self.audit, lambda: self.safety)
+        # 试验序列编排引擎（实验工况步；执行期持 _exec_lock 与矩阵/实验流水线互斥）
+        self.exp_sequences = ExperimentSequenceEngine(
+            self.audit,
+            lambda: self.safety,
+            self._exp_seq_command,
+            self._exp_seq_run_sequence,
+            self._exec_lock,
+        )
         # 联锁矩阵引擎（snapshot 时求值；execute_command 时做许可拦截）
         self.interlocks = InterlockEngine(self.audit, self._interlock_dispatch)
         # 最近一帧测点值（snapshot 时更新；联动 preview / 限值校验复用）
@@ -414,6 +422,7 @@ class RuntimeHub:
         if self._profile_ctx is not None:
             self._profile_ctx.abort_requested = True
         await self.sequences.stop()
+        await self.exp_sequences.stop()
         for task in (self._task, self._ai_task, self._maintenance_task, self._matrix_task,
                      self._profile_task, self._health_task, self._mqtt_task):
             if task:
@@ -686,6 +695,8 @@ class RuntimeHub:
             "interlocks": self.interlocks.status,
             # 挂牌/维护模式（LOTO）：active 挂牌清单（前端角标/按钮置灰用）
             "lockouts": list(self._lockouts.values()),
+            # 试验序列编排：进行中或最近一次执行（步骤进度）
+            "experiment_sequence_exec": self.exp_sequences.snapshot(),
             # 进行中命令队列（accepted 未闭环；仿真同步回执通常为空，真机挂起时可见）
             "commands_active": [
                 {k: v for k, v in o.items() if k != "_t0"} | {"elapsed_s": round(time.monotonic() - o["_t0"], 1)}
@@ -697,6 +708,69 @@ class RuntimeHub:
     async def _interlock_dispatch(self, subsystem_id: str, command: str, params: dict[str, Any]) -> str:
         """联锁引擎的自动执行通道（auto_stop）：直写适配器，绕开指令许可检查（联锁自身即最高优先）。"""
         return await registry.get(SubsystemId(subsystem_id)).write_command(command, params)
+
+    async def _exp_seq_command(self, subsystem_id: str, command: str, params: dict[str, Any], user: str, role: Role) -> str:
+        """试验序列的设定下发通道：预取 confirm_token 通过二次确认门（可信编排自动确认），
+        限值/联锁/挂牌/命令单留痕全链路照常生效。"""
+        req = CommandRequest(subsystem_id=SubsystemId(subsystem_id), command=command, params=dict(params or {}))
+        req.confirm_token = self.arm_command(req)
+        res = await self.execute_command(req, user, role)
+        if not res.ok:
+            raise RuntimeError(res.message)
+        return res.message
+
+    async def _exp_seq_run_sequence(self, sequence_id: str, user: str, role: Role, should_abort: Any) -> str:
+        """试验序列的 sequence_step 通道：调子系统启停序列并 0.2s 轮询等待完成；中止/跳过/急停联动子序列中止。"""
+        seq = await store.get_sequence(sequence_id)
+        if seq is None:
+            raise RuntimeError(f"子系统序列不存在: {sequence_id}")
+        await self.sequences.execute(seq, user, role)
+        while self.sequences.running:
+            if should_abort():
+                await self.sequences.abort(user, role)
+            await asyncio.sleep(0.2)
+        snap = self.sequences.snapshot() or {}
+        if snap.get("state") != "succeeded":
+            raise RuntimeError(f"子系统序列「{seq['name']}」未成功: {snap.get('error') or snap.get('state')}")
+        return f"序列「{seq['name']}」完成"
+
+    async def start_experiment_sequence(self, seq_id: str, experiment_id: str | None, user: str, role: Role) -> dict[str, Any]:
+        """启动试验序列：绑定当前活动实验，无活动实验则自动新建一条实验记录；与启停序列/矩阵互斥。"""
+        seq = await store.get_experiment_sequence(seq_id)
+        if seq is None:
+            raise HTTPException(404, "试验序列不存在")
+        if self.sequences.running:
+            raise HTTPException(409, "子系统启停序列执行中，与试验序列步骤冲突，稍后再试")
+        exp_id = experiment_id or self.experiments.active_id
+        if exp_id is None:
+            exp = await self.experiments.create(
+                ExperimentCreate(title=f"试验序列：{seq['name']}", scenario="气动实验"),
+                user, role,
+            )
+            exp_id = exp.id
+            logger.info("试验序列自动新建实验记录: %s（%s）", exp_id, seq["name"])
+        try:
+            state = await self.exp_sequences.execute(seq, user, role, exp_id)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        # 阶段联动：执行中标记「工况设置」，执行结束后回空闲（不覆盖已中止）
+        try:
+            await self.experiments.set_phase(exp_id, ExperimentPhase.setpoint, user, role)
+        except Exception:  # noqa: BLE001
+            logger.warning("试验序列关联实验阶段标记失败", exc_info=True)
+        task = self.exp_sequences.task
+        if task is not None:
+            task.add_done_callback(lambda _t: asyncio.create_task(self._exp_seq_done(exp_id, user, role)))
+        return state
+
+    async def _exp_seq_done(self, exp_id: str, user: str, role: Role) -> None:
+        """试验序列执行结束：关联实验回空闲阶段。"""
+        try:
+            cur = self.experiments.get(exp_id)
+            if cur.phase not in (ExperimentPhase.aborted, ExperimentPhase.idle):
+                await self.experiments.set_phase(exp_id, ExperimentPhase.idle, user, role)
+        except Exception:  # noqa: BLE001
+            logger.warning("试验序列结束回空闲失败", exc_info=True)
 
     async def overview(self) -> SystemOverview:
         ads = registry.all()

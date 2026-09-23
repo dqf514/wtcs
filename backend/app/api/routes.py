@@ -63,7 +63,7 @@ from app.services import backup as backup_svc
 from app.services import mqtt_pub
 from app.services.extras import build_report_html, compute_run_summary, nl_query, run_ai_inspection, twin_snapshot
 from app.services.health import health as health_svc
-from app.services.orchestration import validate_steps
+from app.services.orchestration import validate_exp_steps, validate_steps
 from app.services.interlocks import ExprError, validate_rule
 from app.services.coordination import apply_linkage, preview_linkage
 from app.services.runtime import hub
@@ -768,6 +768,107 @@ async def abort_sequence_execution(
     if not ok:
         raise HTTPException(409, "当前没有执行中的序列")
     return {"ok": True}
+
+
+# ---------- 试验序列编排（实验工况步序列：启停序列调用/设定/保持/采集/提示） ----------
+
+class ExpSequenceIn(BaseModel):
+    name: str
+    description: str = ""
+    steps: list[dict]
+
+
+def _validate_exp_steps_or_400(steps: Any) -> list[dict]:
+    try:
+        return validate_exp_steps(steps)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+# 注意：/execution 系列须先于 /{seq_id} 声明，否则被路径参数吞掉
+@router.get("/experiment-sequences/execution")
+async def get_exp_sequence_execution(user: Annotated[UserInfo, Depends(current_user)]):
+    """进行中或最近一次试验序列执行的状态（步骤进度）。"""
+    return hub.exp_sequences.snapshot() or {"state": "none"}
+
+
+@router.post("/experiment-sequences/execution/{action}")
+async def control_exp_sequence(
+    action: str,
+    user: Annotated[UserInfo, Depends(require_roles(Role.operator, Role.maintainer, Role.admin))],
+):
+    """执行控制：pause / resume / skip / abort。"""
+    try:
+        return await hub.exp_sequences.control(action, user.username, user.role)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/experiment-sequences")
+async def list_experiment_sequences(user: Annotated[UserInfo, Depends(current_user)]):
+    return await store.list_experiment_sequences()
+
+
+@router.post("/experiment-sequences")
+async def create_experiment_sequence(
+    body: ExpSequenceIn,
+    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer, Role.admin))],
+):
+    steps = _validate_exp_steps_or_400(body.steps)
+    row = await store.upsert_experiment_sequence(
+        uuid.uuid4().hex[:8], body.name.strip(), body.description.strip(), steps, created_by=user.username
+    )
+    await hub.audit.add(user.username, user.role, "新建试验序列", f"{row['name']}（{len(steps)} 步）", None)
+    return row
+
+
+@router.get("/experiment-sequences/{seq_id}")
+async def get_experiment_sequence(seq_id: str, user: Annotated[UserInfo, Depends(current_user)]):
+    row = await store.get_experiment_sequence(seq_id)
+    if row is None:
+        raise HTTPException(404, "试验序列不存在")
+    return row
+
+
+@router.put("/experiment-sequences/{seq_id}")
+async def update_experiment_sequence(
+    seq_id: str,
+    body: ExpSequenceIn,
+    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer, Role.admin))],
+):
+    old = await store.get_experiment_sequence(seq_id)
+    if old is None:
+        raise HTTPException(404, "试验序列不存在")
+    steps = _validate_exp_steps_or_400(body.steps)
+    row = await store.upsert_experiment_sequence(
+        seq_id, body.name.strip(), body.description.strip(), steps, created_by=user.username
+    )
+    await hub.audit.add(user.username, user.role, "更新试验序列", f"{row['name']}（v{row.get('version')}）", None)
+    return row
+
+
+@router.delete("/experiment-sequences/{seq_id}")
+async def delete_experiment_sequence(
+    seq_id: str,
+    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer, Role.admin))],
+):
+    if hub.exp_sequences.running and hub.exp_sequences.snapshot().get("seq_id") == seq_id:
+        raise HTTPException(409, "该试验序列正在执行中，不能删除")
+    ok = await store.delete_experiment_sequence(seq_id)
+    if not ok:
+        raise HTTPException(404, "试验序列不存在")
+    await hub.audit.add(user.username, user.role, "删除试验序列", seq_id, None)
+    return {"ok": True}
+
+
+@router.post("/experiment-sequences/{seq_id}/start")
+async def start_experiment_sequence(
+    seq_id: str,
+    body: dict | None = None,
+    user: Annotated[UserInfo, Depends(require_roles(Role.operator, Role.maintainer, Role.admin))] = None,
+):
+    """启动试验序列：绑定当前活动实验（或 body.experiment_id 指定；都没有则自动新建实验记录）。"""
+    return await hub.start_experiment_sequence(seq_id, (body or {}).get("experiment_id"), user.username, user.role)
 
 
 # ---------- 联锁矩阵（可配置安全联锁：报警/指令拦截/自动停车） ----------

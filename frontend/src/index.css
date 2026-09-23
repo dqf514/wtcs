@@ -1130,6 +1130,15 @@ html[data-sidebar="expanded"] {
   font-size: 12px;
   font-weight: 600;
 }
+.exp-step-editor {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 12px 8px;
+  margin-bottom: 10px;
+}
+.exp-step-editor .form-row {
+  margin-top: 8px;
+}
 .section-sub-loose {
   margin-top: 18px;
 }

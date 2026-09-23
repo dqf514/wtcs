@@ -102,6 +102,56 @@ export interface SequenceExecution {
   steps: SequenceStepStatus[]
 }
 
+/** 试验序列编排（实验工况步序列：启停序列调用/设定/保持/采集/提示） */
+export interface ExpSequenceStep {
+  type: 'sequence_step' | 'setpoint' | 'hold' | 'acquire' | 'notify'
+  label?: string
+  /** sequence_step：子系统启停序列 id */
+  sequence_id?: string
+  /** setpoint/acquire：目标子系统 */
+  subsystem?: string
+  /** setpoint：指令名 */
+  command?: string
+  params?: Record<string, unknown>
+  /** hold：保持秒数 */
+  seconds?: number
+  /** acquire：start/stop */
+  action?: 'start' | 'stop'
+  /** notify：提示内容；alert=true 时产生一条 info 告警 */
+  message?: string
+  alert?: boolean
+}
+export interface ExpSequenceDef {
+  id: string
+  name: string
+  description: string
+  steps: ExpSequenceStep[]
+  version: number
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+export interface ExpSequenceStepStatus {
+  label: string
+  type: string
+  status: 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
+  message: string
+}
+export interface ExpSequenceExec {
+  id: string
+  seq_id: string
+  name: string
+  experiment_id: string | null
+  state: 'running' | 'paused' | 'succeeded' | 'failed' | 'aborted'
+  operator: string
+  started_at: string
+  finished_at: string
+  error: string
+  current_step: number
+  total_steps: number
+  steps: ExpSequenceStepStatus[]
+}
+
 /** 联锁规则（alarm=报警 / block=指令许可拦截 / auto_stop=自动停车） */
 export interface InterlockRule {
   id: string
@@ -1162,6 +1212,23 @@ export const api = {
   abortSequence: () => request<{ ok: boolean }>('/api/sequence-execution/abort', { method: 'POST' }),
   updateSequence: (id: string, patch: { name?: string; steps?: SequenceStepDef[] }) =>
     request<SequenceDef>(`/api/sequences/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) }),
+
+  // ---------- 试验序列编排 ----------
+  listExpSequences: () => request<ExpSequenceDef[]>('/api/experiment-sequences'),
+  createExpSequence: (body: { name: string; description?: string; steps: ExpSequenceStep[] }) =>
+    request<ExpSequenceDef>('/api/experiment-sequences', { method: 'POST', body: JSON.stringify(body) }),
+  updateExpSequence: (id: string, body: { name: string; description?: string; steps: ExpSequenceStep[] }) =>
+    request<ExpSequenceDef>(`/api/experiment-sequences/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteExpSequence: (id: string) =>
+    request<{ ok: boolean }>(`/api/experiment-sequences/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  startExpSequence: (id: string, experimentId?: string) =>
+    request<ExpSequenceExec>(`/api/experiment-sequences/${encodeURIComponent(id)}/start`, {
+      method: 'POST',
+      body: JSON.stringify(experimentId ? { experiment_id: experimentId } : {}),
+    }),
+  expSequenceExecution: () => request<ExpSequenceExec | { state: 'none' }>('/api/experiment-sequences/execution'),
+  controlExpSequence: (action: 'pause' | 'resume' | 'skip' | 'abort') =>
+    request<ExpSequenceExec>(`/api/experiment-sequences/execution/${action}`, { method: 'POST' }),
 
   // ---------- 联锁矩阵 ----------
   listInterlocks: () => request<InterlockRule[]>('/api/interlocks'),

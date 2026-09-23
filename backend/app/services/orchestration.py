@@ -316,3 +316,323 @@ class SequenceEngine:
                         return
             await asyncio.sleep(0.2)
         self._fail_step(step_idx, f"等待条件超时（{wait.get('timeout_s', 30)}s）")
+
+
+# ---------- 试验序列编排（实验工况步序列） ----------
+
+# 步骤类型：sequence_step 调子系统启停序列 / setpoint 设定下发 / hold 保持 / acquire 采集开关 / notify 提示
+EXP_STEP_TYPES = ("sequence_step", "setpoint", "hold", "acquire", "notify")
+
+# setpoint/acquire 允许的子系统即全部 12 子系统（SubsystemId 枚举校验）
+_ACQUIRE_ACTIONS = ("start", "stop")
+
+
+def validate_exp_steps(steps: Any) -> list[dict[str, Any]]:
+    """校验试验序列步骤结构，非法抛 ValueError。返回规范化后的步骤列表。"""
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("步骤列表不能为空")
+    out: list[dict[str, Any]] = []
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            raise ValueError(f"第 {i + 1} 步必须是对象")
+        t = step.get("type")
+        if t not in EXP_STEP_TYPES:
+            raise ValueError(f"第 {i + 1} 步类型无效（须为 {'/'.join(EXP_STEP_TYPES)}）: {t}")
+        s: dict[str, Any] = {"type": t, "label": str(step.get("label") or "")}
+        if t == "sequence_step":
+            seq_id = str(step.get("sequence_id") or "").strip()
+            if not seq_id:
+                raise ValueError(f"第 {i + 1} 步缺少 sequence_id（子系统序列 id）")
+            s["sequence_id"] = seq_id
+            s["label"] = s["label"] or f"执行序列 {seq_id}"
+        elif t == "setpoint":
+            try:
+                sid = SubsystemId(step.get("subsystem"))
+            except ValueError as exc:
+                raise ValueError(f"第 {i + 1} 步子系统不存在: {step.get('subsystem')}") from exc
+            command = str(step.get("command") or "").strip()
+            if not command:
+                raise ValueError(f"第 {i + 1} 步缺少 command")
+            s.update(subsystem=sid.value, command=command, params=dict(step.get("params") or {}))
+            s["label"] = s["label"] or f"{sid.value}.{command}"
+        elif t == "hold":
+            try:
+                seconds = float(step.get("seconds"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"第 {i + 1} 步保持时长无效: {step.get('seconds')}") from exc
+            if not 0 < seconds <= 3600:
+                raise ValueError(f"第 {i + 1} 步保持时长须在 (0, 3600] 秒: {seconds}")
+            s["seconds"] = seconds
+            s["label"] = s["label"] or f"保持 {seconds:g}s"
+        elif t == "acquire":
+            try:
+                sid = SubsystemId(step.get("subsystem"))
+            except ValueError as exc:
+                raise ValueError(f"第 {i + 1} 步子系统不存在: {step.get('subsystem')}") from exc
+            action = str(step.get("action") or "")
+            if action not in _ACQUIRE_ACTIONS:
+                raise ValueError(f"第 {i + 1} 步采集动作须为 start/stop: {action}")
+            s.update(subsystem=sid.value, action=action)
+            s["label"] = s["label"] or f"{sid.value} 采集{'开始' if action == 'start' else '停止'}"
+        else:  # notify
+            message = str(step.get("message") or "").strip()
+            if not message:
+                raise ValueError(f"第 {i + 1} 步缺少提示内容 message")
+            s["message"] = message
+            s["alert"] = bool(step.get("alert"))
+            s["label"] = s["label"] or f"提示：{message[:20]}"
+        out.append(s)
+    return out
+
+
+class _SeqAbort(Exception):
+    """试验序列中止信号（引擎内部使用）。"""
+
+
+class ExperimentSequenceEngine:
+    """试验序列执行引擎：实验工况步编排。
+
+    - setpoint/acquire 经 exec_command 回调走 execute_command 全链路（限值/联锁/挂牌/命令单均生效）；
+    - sequence_step 经 run_sequence 回调调子系统启停序列并等待完成；
+    - 执行期持有 exec_lock（与矩阵/实验流水线互斥），同一时刻只允许一个试验序列；
+    - 支持暂停/继续/跳过当前步/中止；急停立即中止；每步执行写审计。
+    """
+
+    def __init__(self, audit: Any, get_safety: Any, exec_command: Any, run_sequence: Any, exec_lock: asyncio.Lock) -> None:
+        self._audit = audit
+        self._get_safety = get_safety
+        self._exec_command = exec_command  # async (subsystem, command, params, user, role) -> str
+        self._run_sequence = run_sequence  # async (sequence_id, user, role, should_abort) -> str
+        self._exec_lock = exec_lock
+        self._task: asyncio.Task | None = None
+        self._pause = asyncio.Event()
+        self._pause.set()
+        self._abort = False
+        self._skip = False
+        self.current: dict[str, Any] | None = None  # 进行中或最近一次执行
+
+    @property
+    def running(self) -> bool:
+        return self.current is not None and self.current["state"] in ("running", "paused")
+
+    @property
+    def task(self) -> asyncio.Task | None:
+        return self._task
+
+    def snapshot(self) -> dict[str, Any] | None:
+        return self.current
+
+    def _safety_value(self) -> str:
+        s = self._get_safety()
+        return s if isinstance(s, str) else s.value
+
+    def _estop(self) -> bool:
+        return self._safety_value() == "急停"
+
+    async def execute(self, seq: dict[str, Any], user: str, role: Any, experiment_id: str | None = None) -> dict[str, Any]:
+        if self.running:
+            raise RuntimeError("已有试验序列在执行中")
+        if self._exec_lock.locked():
+            raise RuntimeError("已有矩阵或实验流水线在执行，稍后再试")
+        if self._estop():
+            raise RuntimeError("系统处于急停状态，请先复位急停")
+        steps = validate_exp_steps(seq["steps"])
+        self._abort = False
+        self._skip = False
+        self._pause.set()
+        self.current = {
+            "id": uuid.uuid4().hex[:10],
+            "seq_id": seq["id"],
+            "name": seq["name"],
+            "experiment_id": experiment_id,
+            "state": "running",
+            "operator": user,
+            "started_at": local_now().isoformat(timespec="seconds"),
+            "finished_at": "",
+            "error": "",
+            "current_step": 0,
+            "total_steps": len(steps),
+            "steps": [
+                {"label": s["label"], "type": s["type"], "status": "pending", "message": ""}
+                for s in steps
+            ],
+        }
+        await self._audit.add(
+            user, role, "试验序列启动",
+            f"{seq['name']}（{len(steps)} 步，实验 {experiment_id or '未关联'}）", None,
+        )
+        logger.info("试验序列启动: %s by %s（实验 %s）", seq["name"], user, experiment_id)
+        self._task = asyncio.create_task(self._run(steps, user, role))
+        return self.current
+
+    async def control(self, action: str, user: str, role: Any) -> dict[str, Any]:
+        """执行控制：pause / resume / skip（跳过当前步）/ abort。"""
+        if not self.running:
+            raise RuntimeError("当前没有执行中的试验序列")
+        cur = self.current
+        assert cur is not None
+        cn = {"pause": "暂停", "resume": "继续", "skip": "跳过当前步", "abort": "中止"}.get(action)
+        if cn is None:
+            raise RuntimeError(f"未知控制动作: {action}")
+        if action == "pause":
+            self._pause.clear()
+            cur["state"] = "paused"
+        elif action == "resume":
+            self._pause.set()
+            cur["state"] = "running"
+        elif action == "skip":
+            self._skip = True
+            self._pause.set()  # 暂停中也允许跳过（唤醒当前步）
+            if cur["state"] == "paused":
+                cur["state"] = "running"
+        else:  # abort
+            self._abort = True
+            self._pause.set()
+        await self._audit.add(user, role, f"试验序列{cn}", cur["name"], None)
+        logger.info("试验序列控制: %s → %s by %s", cur["name"], action, user)
+        return cur
+
+    async def stop(self) -> None:
+        self._abort = True
+        self._pause.set()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    # ---------- 内部 ----------
+
+    def _fail_step(self, i: int, message: str) -> None:
+        cur = self.current
+        assert cur is not None
+        cur["steps"][i]["status"] = "failed"
+        cur["steps"][i]["message"] = message
+        cur["state"] = "failed"
+        cur["error"] = f"第 {i + 1} 步「{cur['steps'][i]['label']}」失败：{message}"
+
+    def _abort_at(self, i: int, reason: str) -> None:
+        cur = self.current
+        assert cur is not None
+        cur["steps"][i]["status"] = "skipped"
+        cur["steps"][i]["message"] = reason
+        for j in range(i + 1, cur["total_steps"]):
+            cur["steps"][j]["status"] = "skipped"
+        cur["state"] = "aborted"
+        cur["error"] = reason
+
+    async def _run(self, steps: list[dict[str, Any]], user: str, role: Any) -> None:
+        cur = self.current
+        assert cur is not None
+        async with self._exec_lock:  # 执行期持锁：矩阵/实验流水线/其他试验序列不得并发
+            try:
+                for i, step in enumerate(steps):
+                    cur["current_step"] = i
+                    st = cur["steps"][i]
+                    # 暂停：步骤开始前等待继续（暂停中也可跳过/中止）
+                    if not self._pause.is_set():
+                        cur["state"] = "paused"
+                        await self._pause.wait()
+                        if not self._abort and not self._estop():
+                            cur["state"] = "running"
+                    if self._abort:
+                        self._abort_at(i, "操作员中止")
+                        break
+                    if self._estop():
+                        self._fail_step(i, "系统急停，序列中止")
+                        cur["state"] = "aborted"
+                        cur["error"] = "系统急停，序列中止"
+                        break
+                    if self._skip:
+                        # 暂停期间点了跳过：本步不执行
+                        self._skip = False
+                        st["status"] = "skipped"
+                        st["message"] = "已跳过"
+                        await self._audit.add(user, role, "试验序列步骤", f"{cur['name']} 第{i + 1}步「{st['label']}」→ 已跳过", None)
+                        continue
+                    st["status"] = "running"
+                    try:
+                        msg = await self._exec_step(step, i, user, role)
+                    except _SeqAbort:
+                        self._abort_at(i, "操作员中止")
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        self._fail_step(i, str(exc))
+                        logger.warning("试验序列步骤失败: %s 第%d步 → %s", cur["name"], i + 1, exc)
+                        break
+                    if self._skip:
+                        self._skip = False
+                        st["status"] = "skipped"
+                        st["message"] = "已跳过"
+                    else:
+                        st["status"] = "ok"
+                        st["message"] = msg
+                    await self._audit.add(user, role, "试验序列步骤", f"{cur['name']} 第{i + 1}步「{st['label']}」→ {st['message']}", None)
+                if cur["state"] in ("running", "paused"):
+                    cur["state"] = "succeeded"
+                    await self._audit.add(user, role, "试验序列完成", cur["name"], None)
+                    logger.info("试验序列完成: %s", cur["name"])
+                else:
+                    await self._audit.add(user, role, "试验序列未成功", f"{cur['name']}: {cur['error']}", None)
+            finally:
+                cur["finished_at"] = local_now().isoformat(timespec="seconds")
+                self._skip = False
+
+    async def _exec_step(self, step: dict[str, Any], idx: int, user: str, role: Any) -> str:
+        t = step["type"]
+        if t == "setpoint":
+            return await self._exec_command(step["subsystem"], step["command"], step["params"], user, role)
+        if t == "acquire":
+            cmd = "start_acquire" if step["action"] == "start" else "stop_acquire"
+            return await self._exec_command(step["subsystem"], cmd, {}, user, role)
+        if t == "hold":
+            return await self._hold(step["seconds"], idx)
+        if t == "sequence_step":
+            return await self._run_sequence(
+                step["sequence_id"], user, role,
+                lambda: self._abort or self._skip or self._estop(),
+            )
+        # notify：写审计（调用方统一写步骤审计）+ 可选 info 级告警
+        msg = step["message"]
+        if step.get("alert"):
+            cur = self.current
+            assert cur is not None
+            await store.activate_interlock_alert({
+                "id": uuid.uuid4().hex[:12],
+                "level": "info",
+                "severity": "info",
+                "dedupe_key": f"exp_seq:{cur['id']}:{idx}",
+                "subsystem_id": "",
+                "subsystem_name": "试验序列",
+                "message": f"试验序列「{cur['name']}」第 {idx + 1} 步：{msg}",
+                "ts": local_now().isoformat(timespec="seconds"),
+                "source": "试验序列",
+                "active": True,
+                "count": 1,
+            })
+        return msg
+
+    async def _hold(self, seconds: float, idx: int) -> str:
+        """保持 N 秒：暂停顺延、可跳过、可中止、急停中止；step message 实时显示剩余秒数。"""
+        cur = self.current
+        assert cur is not None
+        deadline = time.monotonic() + seconds
+        while True:
+            if self._abort:
+                raise _SeqAbort()
+            if self._estop():
+                raise RuntimeError("系统急停，序列中止")
+            if self._skip:
+                return "已跳过"
+            if not self._pause.is_set():
+                remaining = deadline - time.monotonic()
+                await self._pause.wait()
+                deadline = time.monotonic() + max(0.0, remaining)
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                cur["steps"][idx]["message"] = ""
+                return f"保持 {seconds:g}s 完成"
+            cur["steps"][idx]["message"] = f"剩余 {remaining:.1f}s"
+            await asyncio.sleep(min(0.2, remaining))

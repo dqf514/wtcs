@@ -310,6 +310,16 @@ export function IconStop(p: IconProps) {
   )
 }
 
+/** 跳过当前步：双三角快进 + 竖线 */
+export function IconSkip(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M5 6l7 6-7 6V6z" />
+      <path d="M13 6l6 6-6 6V6z" />
+    </Svg>
+  )
+}
+
 /** 中止：八边形停止手势 */
 export function IconAbort(p: IconProps) {
   return (

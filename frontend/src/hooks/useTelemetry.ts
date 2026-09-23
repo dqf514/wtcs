@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getToken, setToken, setCurrentUser, type AiAlert, type CommandActiveItem, type InterlockStatus, type LockoutInfo, type Overview, type SequenceExecution, type SubsystemStatus, type SystemStateInfo } from '../api'
+import { getToken, setToken, setCurrentUser, type AiAlert, type CommandActiveItem, type ExpSequenceExec, type InterlockStatus, type LockoutInfo, type Overview, type SequenceExecution, type SubsystemStatus, type SystemStateInfo } from '../api'
 
 export interface TelemetryFrame {
   overview: Overview
@@ -9,6 +9,8 @@ export interface TelemetryFrame {
   system_state?: SystemStateInfo
   /** 进行中或最近一次的启停序列执行 */
   sequence_exec?: SequenceExecution | null
+  /** 进行中或最近一次的试验序列编排执行 */
+  experiment_sequence_exec?: ExpSequenceExec | null
   /** 联锁矩阵真值表（每条规则的当前许可/违规状态） */
   interlocks?: InterlockStatus[]
   /** 进行中命令队列（已建单未闭环；仿真同步回执通常为空） */
