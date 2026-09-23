@@ -53,6 +53,17 @@ TRAVERSE_TOL_MM = 1.0
 # 设备运行时长落库周期（秒）
 EQUIP_PERSIST_SEC = 60.0
 
+# 指令互斥对（冲突检测）：同子系统 MUTEX_WINDOW_SEC 秒内已下发互斥指令时，要求二次确认
+MUTEX_PAIRS: dict[str, str] = {
+    "start": "stop",
+    "stop": "start",
+    "start_belt": "stop_belt",
+    "stop_belt": "start_belt",
+    "start_acquire": "stop_acquire",
+    "stop_acquire": "start_acquire",
+}
+MUTEX_WINDOW_SEC = 5
+
 
 class ExecutionAborted(Exception):
     """执行上下文中止信号（矩阵/实验流水线内部使用）。"""
@@ -211,6 +222,8 @@ DEFAULT_LIVE_SETTINGS: dict[str, Any] = {
     "link_belt_ratio": 1.0,
     "link_suction_ratio": 40,
     "link_wind_threshold": 5,
+    # 命令单超时（秒）：accepted 超过该时长无回执 → 置 timeout 并产生告警（防御真机适配器挂起）
+    "cmd_timeout_sec": 10,
 }
 
 
@@ -351,6 +364,10 @@ class RuntimeHub:
         self._equip_today: dict[str, float] = {}
         self._equip_day: str = ""
         self._equip_persist_timer = 0.0
+        # 命令单在途表（accepted 未闭环）：snapshot 的 commands_active 直读内存，超时扫描读库
+        self._cmd_active: dict[str, dict[str, Any]] = {}
+        self._cmd_timeout_alerted: set[str] = set()
+        self._cmd_scan_counter = 0
 
     async def start(self) -> None:
         await self.refresh_settings()
@@ -583,6 +600,14 @@ class RuntimeHub:
             except Exception:  # noqa: BLE001
                 logger.exception("run 采样写入失败")
 
+        # 命令超时扫描（约 1Hz）：accepted 超期无回执 → timeout + 告警
+        self._cmd_scan_counter += 1
+        if self._cmd_scan_counter % 10 == 0:
+            try:
+                await self._scan_command_timeouts()
+            except Exception:  # noqa: BLE001
+                logger.exception("命令超时扫描异常")
+
         snapshot = await self.snapshot()
         dead: list[asyncio.Queue] = []
         for q in self._subscribers:
@@ -650,6 +675,11 @@ class RuntimeHub:
             "system_state": self.system_state,
             "sequence_exec": self.sequences.snapshot(),
             "interlocks": self.interlocks.status,
+            # 进行中命令队列（accepted 未闭环；仿真同步回执通常为空，真机挂起时可见）
+            "commands_active": [
+                {k: v for k, v in o.items() if k != "_t0"} | {"elapsed_s": round(time.monotonic() - o["_t0"], 1)}
+                for o in self._cmd_active.values()
+            ],
             "server_time": local_now().isoformat(timespec="seconds"),
         }
 
@@ -699,20 +729,78 @@ class RuntimeHub:
         return token
 
     async def execute_command(self, req: CommandRequest, user: str, role: Role) -> CommandResult:
+        """指令网关：全生命周期建单（command_orders）——入口建单、回执闭环、拒绝留痕、超时告警。
+
+        - 限值拒绝 / 越权拒绝 / 联锁拦截 / 执行失败均建单（status=rejected/failed），receipt 写原因；
+        - 需二次确认的中间返回不建单（确认重发后才真正进入生命周期）；
+        - 同子系统 5 秒内存在互斥指令（MUTEX_PAIRS）时，复用 confirm_token 通道返回警告，由前端弹确认。
+        """
+        order_id = uuid.uuid4().hex[:12]
+        t0 = time.monotonic()
+        opened = False
+
+        async def open_order() -> None:
+            """建单并入在途表（幂等：同一请求只建一次）。"""
+            nonlocal opened
+            if opened:
+                return
+            opened = True
+            created = local_now().isoformat(timespec="seconds")
+            try:
+                await store.create_command_order({
+                    "id": order_id,
+                    "subsystem": req.subsystem_id.value,
+                    "command": req.command,
+                    "params": dict(req.params or {}),
+                    "operator": user,
+                    "role": role.value if isinstance(role, Role) else str(role),
+                    "created_at": created,
+                })
+                self._cmd_active[order_id] = {
+                    "id": order_id,
+                    "subsystem": req.subsystem_id.value,
+                    "command": req.command,
+                    "operator": user,
+                    "created_at": created,
+                    "_t0": t0,
+                }
+            except Exception:  # noqa: BLE001
+                logger.exception("命令单建单失败: %s.%s", req.subsystem_id.value, req.command)
+
+        async def close_order(status: str, receipt: str) -> None:
+            """闭环：写回执/耗时/最终状态，退出在途表；曾超时告警的同步恢复。"""
+            duration_ms = round((time.monotonic() - t0) * 1000, 1)
+            self._cmd_active.pop(order_id, None)
+            if not opened:
+                return
+            try:
+                await store.finish_command_order(order_id, status, receipt, duration_ms)
+                if order_id in self._cmd_timeout_alerted:
+                    self._cmd_timeout_alerted.discard(order_id)
+                    await store.resolve_interlock_alerts([f"cmd_timeout:{order_id}"])
+            except Exception:  # noqa: BLE001
+                logger.exception("命令单闭环写库失败: %s", order_id)
+
         # 急停始终可执行
         if self.safety == SafetyLevel.e_stop and req.command not in ("reset_e_stop", "e_stop", "ack_alarm"):
             if req.subsystem_id != SubsystemId.safety:
+                await open_order()
+                await close_order("rejected", "系统处于急停状态，仅允许安全相关操作")
                 return CommandResult(ok=False, message="系统处于急停状态，仅允许安全相关操作")
 
         contract = registry.get(req.subsystem_id).contract
         cmd_spec = next((c for c in contract.commands if c.name == req.command), None)
         if not cmd_spec:
+            await open_order()
+            await close_order("rejected", "未知命令")
             return CommandResult(ok=False, message="未知命令")
 
         # 参数限值前置校验：超出安全限值直接拒绝（联动/手动/任何入口一视同仁）
         param_err = validate_params(dict(req.params or {}))
         if param_err:
             await self.audit.add(user, role, "指令被拒", f"{req.subsystem_id.value}.{req.command}：{param_err}", req.subsystem_id.value)
+            await open_order()
+            await close_order("rejected", param_err)
             return CommandResult(ok=False, message=param_err)
 
         # 指令级角色校验：低于 CommandSpec.min_role 拒绝
@@ -728,19 +816,38 @@ class RuntimeHub:
             )
             logger.warning(
                 "指令越权拒绝: %s（%s）→ %s.%s（需 %s）",
-                user, role.value, req.subsystem_id.value, req.command, required_role.value,
+                user, role.value if isinstance(role, Role) else role, req.subsystem_id.value, req.command, required_role.value,
             )
+            await open_order()
+            await close_order("rejected", f"权限不足：需要 {required_role.value} 及以上角色")
             raise HTTPException(
                 status_code=403,
                 detail=f"权限不足：指令 {req.command} 需要 {required_role.value} 及以上角色",
             )
 
-        if cmd_spec.require_confirm:
+        # 冲突检测：同子系统 5 秒内已下发互斥指令（start/stop 等）→ 警告并走二次确认
+        conflict: dict[str, Any] | None = None
+        mutex_cmd = MUTEX_PAIRS.get(req.command)
+        if mutex_cmd:
+            since = (local_now() - timedelta(seconds=MUTEX_WINDOW_SEC)).isoformat(timespec="seconds")
+            try:
+                conflict = await store.find_recent_mutex_command(req.subsystem_id.value, [mutex_cmd], since)
+            except Exception:  # noqa: BLE001
+                logger.exception("互斥冲突查询失败: %s.%s", req.subsystem_id.value, req.command)
+        warn = (
+            f"警告：{MUTEX_WINDOW_SEC} 秒内 {conflict['operator']} 已下发互斥指令"
+            f" {req.subsystem_id.value}.{conflict['command']}（{conflict['created_at']}）；"
+            if conflict else ""
+        )
+
+        # 二次确认门：高风险指令或互斥冲突共用一枚 confirm_token；中间返回不建单
+        if cmd_spec.require_confirm or conflict:
             if not req.confirm_token or req.confirm_token not in self._confirm_tokens:
                 token = self.arm_command(req)
+                reason = "高风险指令需二次确认" if cmd_spec.require_confirm else "检测到互斥指令冲突，确认后继续执行"
                 return CommandResult(
                     ok=False,
-                    message=f"高风险指令需二次确认，请携带 confirm_token 重发: {token}",
+                    message=f"{warn}{reason}，请携带 confirm_token 重发: {token}",
                     audit_id=None,
                 )
             armed = self._confirm_tokens.pop(req.confirm_token)
@@ -753,8 +860,11 @@ class RuntimeHub:
             if blocked:
                 await self.audit.add(user, role, "联锁拦截", f"{req.subsystem_id.value}.{req.command}：{blocked}", req.subsystem_id.value)
                 logger.warning("联锁拦截: %s → %s.%s：%s", user, req.subsystem_id.value, req.command, blocked)
+                await open_order()
+                await close_order("rejected", blocked)
                 return CommandResult(ok=False, message=blocked)
 
+        await open_order()
         try:
             msg = await registry.get(req.subsystem_id).write_command(req.command, req.params)
             # 急停时联动：目标风速清零（仿真）
@@ -764,6 +874,7 @@ class RuntimeHub:
                 except Exception:  # noqa: BLE001
                     logger.warning("急停联动停主风机失败", exc_info=True)
                 self.safety = SafetyLevel.e_stop
+            await close_order("acked", msg)
             entry = await self.audit.add(
                 user,
                 role,
@@ -774,11 +885,45 @@ class RuntimeHub:
             logger.info("指令下发: %s → %s.%s %s → %s", user, req.subsystem_id.value, req.command, req.params, msg)
             return CommandResult(ok=True, message=msg, audit_id=entry.id)
         except HTTPException:
+            await close_order("failed", "HTTP 异常")
             raise
         except Exception as exc:  # noqa: BLE001
+            await close_order("failed", str(exc))
             await self.audit.add(user, role, "指令失败", str(exc), req.subsystem_id.value)
             logger.warning("指令执行失败: %s.%s → %s", req.subsystem_id.value, req.command, exc)
             return CommandResult(ok=False, message=str(exc))
+
+    async def _scan_command_timeouts(self) -> None:
+        """命令超时扫描：accepted 超过 cmd_timeout_sec 无回执 → 置 timeout 并产生告警（防御真机适配器挂起）。"""
+        timeout_sec = float(self.live_settings.get("cmd_timeout_sec", 10))
+        if timeout_sec <= 0:
+            return
+        cutoff = (local_now() - timedelta(seconds=timeout_sec)).isoformat(timespec="seconds")
+        stale = await store.list_stale_command_orders(cutoff)
+        now = local_now().isoformat(timespec="seconds")
+        for row in stale:
+            await store.finish_command_order(row["id"], "timeout", f"超过 {timeout_sec:g}s 无回执", None)
+            self._cmd_active.pop(row["id"], None)
+            self._cmd_timeout_alerted.add(row["id"])
+            await store.activate_interlock_alert({
+                "id": uuid.uuid4().hex[:12],
+                "level": "warning",
+                "severity": "warning",
+                "dedupe_key": f"cmd_timeout:{row['id']}",
+                "subsystem_id": row["subsystem"],
+                "subsystem_name": "命令追踪",
+                "message": f"指令超时无回执：{row['subsystem']}.{row['command']}（命令单 {row['id']}，{row['operator']}，已等待 ≥{timeout_sec:g}s）",
+                "ts": now,
+                "source": "命令追踪",
+                "active": True,
+                "count": 1,
+            })
+            await self.audit.add(
+                "system", "系统", "指令超时",
+                f"{row['subsystem']}.{row['command']} 命令单 {row['id']} 超过 {timeout_sec:g}s 无回执",
+                row["subsystem"],
+            )
+            logger.warning("指令超时无回执: %s.%s 命令单 %s", row["subsystem"], row["command"], row["id"])
 
     async def _collect_run_channels(self) -> dict[str, Any]:
         """从刚 tick 完的适配器采集一帧 run 通道数据。

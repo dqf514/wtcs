@@ -269,6 +269,20 @@ class Store:
                 updated_at TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS command_orders (
+                id TEXT PRIMARY KEY,
+                subsystem TEXT NOT NULL,
+                command TEXT NOT NULL,
+                params TEXT NOT NULL DEFAULT '{}',
+                operator TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'accepted',
+                receipt TEXT NOT NULL DEFAULT '',
+                duration_ms REAL,
+                created_at TEXT NOT NULL,
+                finished_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_command_orders_created ON command_orders(created_at);
             CREATE TABLE IF NOT EXISTS interlocks (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -1196,6 +1210,133 @@ class Store:
             await c.commit()
         return (await self.get_sequence(seq_id)) or {}
 
+    # ---------- 命令单（指令全生命周期追踪） ----------
+
+    @staticmethod
+    def _cmd_row(r: Any) -> dict[str, Any]:
+        row = dict(r)
+        try:
+            row["params"] = json.loads(row.get("params") or "{}")
+        except Exception:  # noqa: BLE001
+            row["params"] = {}
+        return row
+
+    async def create_command_order(self, order: dict[str, Any]) -> dict[str, Any]:
+        """建单：指令进入生命周期（status=accepted），回执后由 finish_command_order 闭环。"""
+        now = local_now().isoformat(timespec="seconds")
+        async with self._lock:
+            c = self._require()
+            await c.execute(
+                "INSERT INTO command_orders"
+                "(id, subsystem, command, params, operator, role, status, receipt, duration_ms, created_at, finished_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    order["id"],
+                    order["subsystem"],
+                    order["command"],
+                    json.dumps(order.get("params") or {}, ensure_ascii=False),
+                    order.get("operator", ""),
+                    order.get("role", ""),
+                    order.get("status", "accepted"),
+                    order.get("receipt", ""),
+                    order.get("duration_ms"),
+                    order.get("created_at") or now,
+                    order.get("finished_at"),
+                ),
+            )
+            await c.commit()
+        return (await self.get_command_order(order["id"])) or {}
+
+    async def get_command_order(self, order_id: str) -> dict[str, Any] | None:
+        c = self._require()
+        cursor = await c.execute("SELECT * FROM command_orders WHERE id=?", (order_id,))
+        row = await cursor.fetchone()
+        return self._cmd_row(row) if row else None
+
+    async def finish_command_order(
+        self, order_id: str, status: str, receipt: str, duration_ms: float | None
+    ) -> dict[str, Any] | None:
+        """闭环：写入回执消息、耗时与最终状态（acked/rejected/failed/timeout）。"""
+        now = local_now().isoformat(timespec="seconds")
+        async with self._lock:
+            c = self._require()
+            await c.execute(
+                "UPDATE command_orders SET status=?, receipt=?, duration_ms=?, finished_at=? WHERE id=?",
+                (status, receipt, duration_ms, now, order_id),
+            )
+            await c.commit()
+        return await self.get_command_order(order_id)
+
+    async def list_command_orders(
+        self,
+        subsystem: str | None = None,
+        status: str | None = None,
+        operator: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """历史查询：按子系统/状态/操作者/时间窗过滤，按建单时间倒序。"""
+        conds: list[str] = []
+        params: list[Any] = []
+        if subsystem:
+            conds.append("subsystem=?")
+            params.append(subsystem)
+        if status:
+            conds.append("status=?")
+            params.append(status)
+        if operator:
+            conds.append("operator=?")
+            params.append(operator)
+        if since:
+            conds.append("created_at>=?")
+            params.append(since)
+        if until:
+            conds.append("created_at<=?")
+            params.append(until)
+        sql = "SELECT * FROM command_orders"
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        c = self._require()
+        cursor = await c.execute(sql, params)
+        return [self._cmd_row(r) for r in await cursor.fetchall()]
+
+    async def list_active_command_orders(self, limit: int = 50) -> list[dict[str, Any]]:
+        """进行中队列：已建单未闭环（accepted）。"""
+        c = self._require()
+        cursor = await c.execute(
+            "SELECT * FROM command_orders WHERE status='accepted' ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [self._cmd_row(r) for r in await cursor.fetchall()]
+
+    async def list_stale_command_orders(self, cutoff: str) -> list[dict[str, Any]]:
+        """超时扫描：accepted 且建单时间早于 cutoff 的命令单。"""
+        c = self._require()
+        cursor = await c.execute(
+            "SELECT * FROM command_orders WHERE status='accepted' AND created_at<? ORDER BY created_at",
+            (cutoff,),
+        )
+        return [self._cmd_row(r) for r in await cursor.fetchall()]
+
+    async def find_recent_mutex_command(
+        self, subsystem: str, commands: list[str], since: str
+    ) -> dict[str, Any] | None:
+        """冲突检测：同子系统 since 以来最近一次已成功下发（acked）的互斥指令。"""
+        if not commands:
+            return None
+        placeholders = ",".join("?" for _ in commands)
+        c = self._require()
+        cursor = await c.execute(
+            f"SELECT * FROM command_orders WHERE subsystem=? AND command IN ({placeholders})"
+            " AND status='acked' AND created_at>=? ORDER BY created_at DESC LIMIT 1",
+            (subsystem, *commands, since),
+        )
+        row = await cursor.fetchone()
+        return self._cmd_row(row) if row else None
+
     # ---------- 联锁矩阵 ----------
 
     @staticmethod
@@ -1747,15 +1888,17 @@ class Store:
                     )
             if incoming_keys:
                 placeholders = ",".join("?" for _ in incoming_keys)
-                # 联锁告警（dedupe_key 以 interlock: 开头）由 InterlockEngine 自行恢复，不在巡检同步的关闭范围
+                # 联锁告警（interlock: 前缀）由 InterlockEngine、命令超时告警（cmd_timeout: 前缀）由超时扫描自行恢复，均不在巡检同步的关闭范围
                 await c.execute(
                     f"UPDATE ai_alerts SET active=0, updated_at=? WHERE active=1"
-                    f" AND dedupe_key NOT IN ({placeholders}) AND dedupe_key NOT LIKE 'interlock:%'",
+                    f" AND dedupe_key NOT IN ({placeholders})"
+                    f" AND dedupe_key NOT LIKE 'interlock:%' AND dedupe_key NOT LIKE 'cmd_timeout:%'",
                     (now, *incoming_keys),
                 )
             else:
                 await c.execute(
-                    "UPDATE ai_alerts SET active=0, updated_at=? WHERE active=1 AND dedupe_key NOT LIKE 'interlock:%'", (now,)
+                    "UPDATE ai_alerts SET active=0, updated_at=? WHERE active=1"
+                    " AND dedupe_key NOT LIKE 'interlock:%' AND dedupe_key NOT LIKE 'cmd_timeout:%'", (now,)
                 )
             await c.commit()
 

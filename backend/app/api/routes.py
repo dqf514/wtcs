@@ -1265,6 +1265,28 @@ async def send_command(
     return await hub.execute_command(body, user.username, user.role)
 
 
+@router.get("/commands/history")
+async def command_history(
+    user: Annotated[UserInfo, Depends(current_user)],
+    subsystem: str | None = Query(default=None, description="按子系统过滤"),
+    status: str | None = Query(default=None, description="按状态过滤：accepted/acked/rejected/failed/timeout"),
+    operator: str | None = Query(default=None, description="按操作者过滤"),
+    since: str | None = Query(default=None, description="建单时间下限（ISO）"),
+    until: str | None = Query(default=None, description="建单时间上限（ISO）"),
+    limit: int = Query(default=200, ge=1, le=2000),
+):
+    """命令单历史查询（指令全生命周期留痕）。"""
+    return await store.list_command_orders(
+        subsystem=subsystem, status=status, operator=operator, since=since, until=until, limit=limit
+    )
+
+
+@router.get("/commands/active")
+async def commands_active(user: Annotated[UserInfo, Depends(current_user)]):
+    """进行中命令队列（已建单未闭环）。"""
+    return await store.list_active_command_orders()
+
+
 # ---------- 客户数据隔离：客户仅能访问归属本人订单的实验 / run / 报告 ----------
 
 def _is_customer(user: UserInfo) -> bool:

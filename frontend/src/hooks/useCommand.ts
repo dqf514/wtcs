@@ -23,13 +23,20 @@ export function useCommand(toast: (msg: string, ok?: boolean) => void) {
       try {
         let res = await api.command({ subsystem_id, command, params })
         if (!res.ok && res.message.includes('confirm_token')) {
-          if (!opts?.confirmed) {
-            toastRef.current('该指令需经弹窗确认后执行', false)
-            return false
-          }
           const token = res.message.split('重发: ').pop()?.trim()
           if (!token) {
             toastRef.current(res.message, false)
+            return false
+          }
+          // 互斥冲突警告：把警告内容弹确认窗，用户确认后才携令牌重发
+          if (res.message.includes('互斥')) {
+            const text = res.message.replace(/，?请携带 confirm_token 重发:.*$/, '')
+            if (!window.confirm(text)) {
+              toastRef.current('已取消下发', false)
+              return false
+            }
+          } else if (!opts?.confirmed) {
+            toastRef.current('该指令需经弹窗确认后执行', false)
             return false
           }
           res = await api.command({ subsystem_id, command, params, confirm_token: token })

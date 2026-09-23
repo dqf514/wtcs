@@ -31,6 +31,7 @@ import { EquipmentPage } from './pages/EquipmentPage'
 import { DataPage } from './pages/DataPage'
 import { InsightPage } from './pages/InsightPage'
 import { InterlocksPage } from './pages/InterlocksPage'
+import { CommandsPage } from './pages/CommandsPage'
 import { ScreenPage } from './pages/ScreenPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { OrdersPage } from './pages/OrdersPage'
@@ -53,6 +54,7 @@ const ALL_NAV: AppNavItem[] = [
   { key: 'data', to: '/data', label: '数据中心', group: '试验', page: 'data' },
   { key: 'insight', to: '/insight', label: '智能洞察', group: '系统', page: 'insight' },
   { key: 'interlocks', to: '/interlocks', label: '联锁矩阵', group: '系统', page: 'interlocks' },
+  { key: 'commands', to: '/commands', label: '命令追踪', group: '系统', page: 'commands' },
   { key: 'settings', to: '/settings', label: '系统设置', group: '系统', page: 'settings' },
 ]
 
@@ -68,6 +70,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/data': '数据中心',
   '/insight': '智能洞察',
   '/interlocks': '联锁矩阵',
+  '/commands': '命令追踪',
   '/screen': '大屏',
   '/settings': '系统设置',
   '/equipment': '设备台账',
@@ -78,7 +81,7 @@ function pageOfPath(pathname: string): string | null {
   if (pathname === '/') return 'dashboard'
   if (pathname.startsWith('/subsystems')) return 'subsystems'
   const key = pathname.split('/')[1]
-  return ['portal', 'experiments', 'orders', 'projects', 'customers', 'schedule', 'data', 'insight', 'screen', 'settings', 'equipment', 'interlocks'].includes(key) ? key : null
+  return ['portal', 'experiments', 'orders', 'projects', 'customers', 'schedule', 'data', 'insight', 'screen', 'settings', 'equipment', 'interlocks', 'commands'].includes(key) ? key : null
 }
 
 /** 旧路由 → 新路由重定向（保留既有 query，如 ?new=1 / ?run=xxx；可指定落入的 tab） */
@@ -428,6 +431,7 @@ function Shell({ user, onLogout }: { user: UserInfo; onLogout: () => void }) {
               <Route path="/data" element={<DataPage toast={toast} />} />
               <Route path="/insight" element={<InsightPage toast={toast} />} />
               <Route path="/interlocks" element={<InterlocksPage toast={toast} />} />
+              <Route path="/commands" element={<CommandsPage toast={toast} />} />
               <Route path="/screen" element={<ScreenPage />} />
               <Route path="/settings" element={<SettingsPage toast={toast} />} />
               {/* 旧路由重定向（书签兼容）：保留既有 query 并落入对应 tab */}

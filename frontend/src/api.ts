@@ -142,6 +142,31 @@ export interface InterlockStatus {
   trigger_count: number
 }
 
+/** 命令单（指令全生命周期追踪）：accepted=进行中，acked=已回执，rejected=已拒绝，failed=失败，timeout=超时 */
+export interface CommandOrder {
+  id: string
+  subsystem: string
+  command: string
+  params: Record<string, unknown>
+  operator: string
+  role: string
+  status: 'accepted' | 'acked' | 'rejected' | 'failed' | 'timeout'
+  receipt: string
+  duration_ms: number | null
+  created_at: string
+  finished_at: string | null
+}
+
+/** 进行中命令条目（遥测帧 commands_active） */
+export interface CommandActiveItem {
+  id: string
+  subsystem: string
+  command: string
+  operator: string
+  created_at: string
+  elapsed_s: number
+}
+
 /** 参数联动建议项 */
 export interface LinkageItem {
   id: string
@@ -795,6 +820,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  // ---------- 命令追踪（指令全生命周期） ----------
+  commandHistory: (filters: { subsystem?: string; status?: string; operator?: string; since?: string; until?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => {
+      if (v) qs.set(k, String(v))
+    })
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return request<CommandOrder[]>(`/api/commands/history${suffix}`)
+  },
+  commandsActive: () => request<CommandOrder[]>('/api/commands/active'),
   connectivityOne: (id: string) =>
     request<ConnectivityReport>(`/api/subsystems/${id}/connectivity-test`, { method: 'POST' }),
   connectivityAll: () =>

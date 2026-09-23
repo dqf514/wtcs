@@ -585,6 +585,16 @@ export function IconFeedback(p: IconProps) {
   )
 }
 
+/** 命令追踪：终端提示符 */
+export function IconCommand(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M5 7l5 5-5 5" />
+      <path d="M12.5 17h6.5" />
+    </Svg>
+  )
+}
+
 export const NAV_ICONS: Record<string, (p: IconProps) => ReactElement> = {
   wall: IconWall,
   dashboard: IconDashboard,
@@ -607,6 +617,7 @@ export const NAV_ICONS: Record<string, (p: IconProps) => ReactElement> = {
   insight: IconHealth,
   interlocks: IconSafety,
   equipment: IconHealth,
+  commands: IconCommand,
 }
 
 export const SUBSYSTEM_ICONS: Record<string, (p: IconProps) => ReactElement> = {
