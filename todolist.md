@@ -50,10 +50,11 @@
 - 完成标准：挂牌期间任何指令（含 API 直调）被拒绝并写审计 ✅
 
 ### 7. 试验序列编排（工况自动执行）
-- [ ] 把试验流程编排为序列：开车 → 暖机（风速 X 保持 N 分钟）→ 工况 1（参数组+采集）→ 工况 2 … → 停车
-- [ ] 与现有试验矩阵/速度曲线打通：矩阵每行展开为序列步骤；执行进度实时可见，可暂停/跳过/中止
-- 现状：速度曲线（speed_profiles）只有风速单维度；试验矩阵是数据记录表，不驱动控制
-- 完成标准：一个 WLTP 工况试验从开车到停车全自动执行，过程数据自动归属到该试验
+- [x] 把试验流程编排为序列：步骤类型 启停序列调用/设定指令/保持等待/采集启停/提示（`experiment_sequences` 表，version 自增留痕，`ExperimentSequenceEngine` 逐步执行）
+- [x] 与现有启停序列/命令全链路打通：setpoint/acquire 步骤经 execute_command（限值/联锁/挂牌/命令单全生效）；执行进度实时可见，可暂停/继续/跳过/中止；与矩阵/实验流水线持锁互斥（并发 409）
+- 现状：✅ 已完成（2026-09-23，commit b5caf36）。API `GET/POST/PUT/DELETE /api/experiment-sequences` + `/{id}/start` + `/execution[/{action}]`；前端试验中心「序列编排」tab（`ExpSequencePanel.tsx`：列表+步骤编辑器+执行进度卡）；冒烟 `backend/smoke_experiment_sequences.py` 38/38 通过
+- 待续：矩阵每行一键展开为序列步骤未做（矩阵仍走自身引擎）；WLTP 全流程演示序列未预置
+- 完成标准：一个 WLTP 工况试验从开车到停车全自动执行，过程数据自动归属到该试验（引擎已支持：sequence_step 调开车/停车序列 + setpoint 工况 + acquire 采集 + 自动新建实验记录归属）
 
 ## P1 —— 好用、专业（投产后 1 个月内补齐）
 
