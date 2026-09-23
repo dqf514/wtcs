@@ -269,6 +269,24 @@ class Store:
                 updated_at TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS interlocks (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'alarm',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                condition TEXT NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'alarm',
+                target_subsystem TEXT NOT NULL DEFAULT '',
+                target_command TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL DEFAULT '',
+                builtin INTEGER NOT NULL DEFAULT 0,
+                trigger_count INTEGER NOT NULL DEFAULT 0,
+                last_triggered TEXT NOT NULL DEFAULT '',
+                version INTEGER NOT NULL DEFAULT 1,
+                updated_by TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             """
         )
         await self._migrate()
@@ -1178,6 +1196,125 @@ class Store:
             await c.commit()
         return (await self.get_sequence(seq_id)) or {}
 
+    # ---------- 联锁矩阵 ----------
+
+    @staticmethod
+    def _interlock_row(row: Any) -> dict[str, Any]:
+        d = dict(row)
+        d["enabled"] = bool(d.get("enabled"))
+        d["builtin"] = bool(d.get("builtin"))
+        return d
+
+    async def get_interlock(self, rule_id: str) -> dict[str, Any] | None:
+        c = self._require()
+        cursor = await c.execute("SELECT * FROM interlocks WHERE id=?", (rule_id,))
+        row = await cursor.fetchone()
+        return self._interlock_row(row) if row else None
+
+    async def list_interlocks(self) -> list[dict[str, Any]]:
+        c = self._require()
+        cursor = await c.execute("SELECT * FROM interlocks ORDER BY created_at")
+        rows = await cursor.fetchall()
+        return [self._interlock_row(r) for r in rows]
+
+    async def upsert_interlock(
+        self,
+        rule_id: str,
+        *,
+        name: str,
+        kind: str,
+        enabled: int | bool,
+        condition: str,
+        severity: str,
+        target_subsystem: str = "",
+        target_command: str = "",
+        message: str = "",
+        builtin: bool = False,
+        updated_by: str = "",
+    ) -> dict[str, Any]:
+        """新建或更新联锁规则；更新时 version 自增（配置留痕）。"""
+        now = local_now().isoformat(timespec="seconds")
+        async with self._lock:
+            c = self._require()
+            cursor = await c.execute("SELECT version, created_at FROM interlocks WHERE id=?", (rule_id,))
+            old = await cursor.fetchone()
+            if old is None:
+                await c.execute(
+                    "INSERT INTO interlocks(id, name, kind, enabled, condition, severity,"
+                    " target_subsystem, target_command, message, builtin, version, updated_by, updated_at, created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
+                    (rule_id, name, kind, int(bool(enabled)), condition, severity,
+                     target_subsystem, target_command, message, int(builtin), updated_by, now, now),
+                )
+            else:
+                await c.execute(
+                    "UPDATE interlocks SET name=?, kind=?, enabled=?, condition=?, severity=?,"
+                    " target_subsystem=?, target_command=?, message=?, version=?, updated_by=?, updated_at=? WHERE id=?",
+                    (name, kind, int(bool(enabled)), condition, severity,
+                     target_subsystem, target_command, message,
+                     int(old["version"]) + 1, updated_by, now, rule_id),
+                )
+            await c.commit()
+        return (await self.get_interlock(rule_id)) or {}
+
+    async def delete_interlock(self, rule_id: str) -> bool:
+        async with self._lock:
+            c = self._require()
+            cursor = await c.execute("DELETE FROM interlocks WHERE id=?", (rule_id,))
+            await c.commit()
+            return cursor.rowcount > 0
+
+    async def mark_interlock_triggered(self, rule_id: str, ts: str) -> None:
+        async with self._lock:
+            c = self._require()
+            await c.execute(
+                "UPDATE interlocks SET trigger_count=trigger_count+1, last_triggered=? WHERE id=?",
+                (ts, rule_id),
+            )
+            await c.commit()
+
+    async def activate_interlock_alert(self, alert: dict[str, Any]) -> None:
+        """联锁告警激活：同 dedupe_key 活跃则累加次数，否则插入新行。"""
+        now = local_now().isoformat(timespec="seconds")
+        async with self._lock:
+            c = self._require()
+            cursor = await c.execute(
+                "SELECT id, count FROM ai_alerts WHERE dedupe_key=? AND active=1",
+                (alert["dedupe_key"],),
+            )
+            row = await cursor.fetchone()
+            if row:
+                payload = dict(alert)
+                payload["id"] = row["id"]
+                payload["count"] = int(row["count"]) + 1
+                await c.execute(
+                    "UPDATE ai_alerts SET payload=?, ts=?, severity=?, count=?, updated_at=? WHERE id=?",
+                    (json.dumps(payload, ensure_ascii=False), alert["ts"], alert["severity"], payload["count"], now, row["id"]),
+                )
+            else:
+                await c.execute(
+                    "INSERT OR REPLACE INTO ai_alerts"
+                    "(id, payload, ts, acked, severity, dedupe_key, active, count, updated_at)"
+                    " VALUES(?,?,?,0,?,?,1,1,?)",
+                    (alert["id"], json.dumps(alert, ensure_ascii=False), alert["ts"],
+                     alert["severity"], alert["dedupe_key"], now),
+                )
+            await c.commit()
+
+    async def resolve_interlock_alerts(self, dedupe_keys: list[str]) -> None:
+        """联锁告警恢复：指定 dedupe_key 的活跃告警置为已恢复。"""
+        if not dedupe_keys:
+            return
+        now = local_now().isoformat(timespec="seconds")
+        placeholders = ",".join("?" for _ in dedupe_keys)
+        async with self._lock:
+            c = self._require()
+            await c.execute(
+                f"UPDATE ai_alerts SET active=0, updated_at=? WHERE active=1 AND dedupe_key IN ({placeholders})",
+                (now, *dedupe_keys),
+            )
+            await c.commit()
+
     # ---------- 排程计划 ----------
 
     async def create_schedule(self, schedule: dict[str, Any]) -> dict[str, Any]:
@@ -1610,13 +1747,15 @@ class Store:
                     )
             if incoming_keys:
                 placeholders = ",".join("?" for _ in incoming_keys)
+                # 联锁告警（dedupe_key 以 interlock: 开头）由 InterlockEngine 自行恢复，不在巡检同步的关闭范围
                 await c.execute(
-                    f"UPDATE ai_alerts SET active=0, updated_at=? WHERE active=1 AND dedupe_key NOT IN ({placeholders})",
+                    f"UPDATE ai_alerts SET active=0, updated_at=? WHERE active=1"
+                    f" AND dedupe_key NOT IN ({placeholders}) AND dedupe_key NOT LIKE 'interlock:%'",
                     (now, *incoming_keys),
                 )
             else:
                 await c.execute(
-                    "UPDATE ai_alerts SET active=0, updated_at=? WHERE active=1", (now,)
+                    "UPDATE ai_alerts SET active=0, updated_at=? WHERE active=1 AND dedupe_key NOT LIKE 'interlock:%'", (now,)
                 )
             await c.commit()
 

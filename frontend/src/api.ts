@@ -102,6 +102,46 @@ export interface SequenceExecution {
   steps: SequenceStepStatus[]
 }
 
+/** 联锁规则（alarm=报警 / block=指令许可拦截 / auto_stop=自动停车） */
+export interface InterlockRule {
+  id: string
+  name: string
+  kind: 'alarm' | 'block' | 'auto_stop'
+  enabled: boolean
+  /** 表达式：变量形如 main_fan.wind_speed；block 类为许可条件（成立才放行） */
+  condition: string
+  severity: 'info' | 'warning' | 'alarm' | 'critical'
+  target_subsystem: string
+  target_command: string
+  message: string
+  builtin: boolean
+  trigger_count: number
+  last_triggered: string
+  version: number
+  updated_by: string
+  updated_at: string
+}
+
+/** 联锁真值表行（遥测帧 interlocks） */
+export interface InterlockStatus {
+  id: string
+  name: string
+  kind: 'alarm' | 'block' | 'auto_stop'
+  enabled: boolean
+  condition: string
+  severity: string
+  target_subsystem: string
+  target_command: string
+  message: string
+  /** alarm/auto_stop：条件为真=违规；block：条件为许可（violated 表示许可不成立） */
+  violated: boolean
+  /** 当前是否安全/许可：alarm/auto_stop=未违规，block=许可成立 */
+  pass: boolean
+  error: string
+  last_triggered: string
+  trigger_count: number
+}
+
 /** 项目 */
 export interface Project {
   id: string
@@ -1047,6 +1087,16 @@ export const api = {
   abortSequence: () => request<{ ok: boolean }>('/api/sequence-execution/abort', { method: 'POST' }),
   updateSequence: (id: string, patch: { name?: string; steps?: SequenceStepDef[] }) =>
     request<SequenceDef>(`/api/sequences/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) }),
+
+  // ---------- 联锁矩阵 ----------
+  listInterlocks: () => request<InterlockRule[]>('/api/interlocks'),
+  interlockStatus: () => request<InterlockStatus[]>('/api/interlocks/status'),
+  createInterlock: (rule: Partial<InterlockRule>) =>
+    request<InterlockRule>('/api/interlocks', { method: 'POST', body: JSON.stringify(rule) }),
+  updateInterlock: (id: string, patch: Partial<InterlockRule>) =>
+    request<InterlockRule>(`/api/interlocks/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) }),
+  deleteInterlock: (id: string) =>
+    request<{ ok: boolean }>(`/api/interlocks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }
 
 /** 备份下载需要带 Bearer，不能用裸 <a href>：fetch 成 blob 再触发下载 */

@@ -67,9 +67,9 @@ DEFAULT_USER_PROFILES = {
 # 内置角色权限矩阵（首次启动播种 roles 表；已存在则跳过，不覆盖管理员的后续调整）
 DEFAULT_ROLES: dict[str, dict] = {
     Role.customer.value: {"level": 0, "pages": ["portal", "dashboard", "screen"]},
-    Role.operator.value: {"level": 1, "pages": ["dashboard", "subsystems", "experiments", "data", "insight", "screen", "schedule", "equipment"]},
-    Role.maintainer.value: {"level": 2, "pages": ["dashboard", "subsystems", "experiments", "data", "insight", "screen", "orders", "projects", "customers", "schedule", "settings", "equipment"]},
-    Role.admin.value: {"level": 3, "pages": ["portal", "dashboard", "subsystems", "experiments", "data", "insight", "screen", "orders", "projects", "customers", "schedule", "settings", "equipment"]},
+    Role.operator.value: {"level": 1, "pages": ["dashboard", "subsystems", "experiments", "data", "insight", "screen", "schedule", "equipment", "interlocks"]},
+    Role.maintainer.value: {"level": 2, "pages": ["dashboard", "subsystems", "experiments", "data", "insight", "screen", "orders", "projects", "customers", "schedule", "settings", "equipment", "interlocks"]},
+    Role.admin.value: {"level": 3, "pages": ["portal", "dashboard", "subsystems", "experiments", "data", "insight", "screen", "orders", "projects", "customers", "schedule", "settings", "equipment", "interlocks"]},
 }
 
 

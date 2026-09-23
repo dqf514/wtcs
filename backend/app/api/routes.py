@@ -64,6 +64,7 @@ from app.services import mqtt_pub
 from app.services.extras import build_report_html, compute_run_summary, nl_query, run_ai_inspection, twin_snapshot
 from app.services.health import health as health_svc
 from app.services.orchestration import validate_steps
+from app.services.interlocks import ExprError, validate_rule
 from app.services.runtime import hub
 from app.services.store import WIDE_POINT_KEYS, store
 
@@ -765,6 +766,73 @@ async def abort_sequence_execution(
     ok = await hub.sequences.abort(user.username, user.role)
     if not ok:
         raise HTTPException(409, "当前没有执行中的序列")
+    return {"ok": True}
+
+
+# ---------- 联锁矩阵（可配置安全联锁：报警/指令拦截/自动停车） ----------
+
+@router.get("/interlocks")
+async def list_interlocks(user: Annotated[UserInfo, Depends(current_user)]):
+    """联锁规则列表（含触发统计）。实时真值表见遥测帧 interlocks 或 /interlocks/status。"""
+    return await store.list_interlocks()
+
+
+@router.get("/interlocks/status")
+async def interlock_status(user: Annotated[UserInfo, Depends(current_user)]):
+    """联锁真值表：每条规则的当前 许可/违规 状态（遥测周期求值）。"""
+    return hub.interlocks.status
+
+
+@router.post("/interlocks")
+async def create_interlock(
+    body: dict,
+    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer, Role.admin))],
+):
+    try:
+        rule = validate_rule(body)
+    except ExprError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    rule_id = uuid.uuid4().hex[:8]
+    row = await store.upsert_interlock(rule_id, **rule, updated_by=user.username)
+    await hub.audit.add(user.username, user.role, "新增联锁规则", f"「{rule['name']}」{rule['kind']}：{rule['condition']}", None)
+    return row
+
+
+@router.put("/interlocks/{rule_id}")
+async def update_interlock(
+    rule_id: str,
+    body: dict,
+    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer, Role.admin))],
+):
+    old = await store.get_interlock(rule_id)
+    if old is None:
+        raise HTTPException(404, "联锁规则不存在")
+    merged = {**old, **{k: v for k, v in body.items() if k in (
+        "name", "kind", "enabled", "condition", "severity", "target_subsystem", "target_command", "message")}}
+    try:
+        rule = validate_rule(merged)
+    except ExprError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    row = await store.upsert_interlock(rule_id, **rule, builtin=old["builtin"], updated_by=user.username)
+    await hub.audit.add(
+        user.username, user.role, "更新联锁规则",
+        f"「{rule['name']}」v{row.get('version')}：enabled={rule['enabled']} condition={rule['condition']}", None,
+    )
+    return row
+
+
+@router.delete("/interlocks/{rule_id}")
+async def delete_interlock(
+    rule_id: str,
+    user: Annotated[UserInfo, Depends(require_roles(Role.maintainer, Role.admin))],
+):
+    old = await store.get_interlock(rule_id)
+    if old is None:
+        raise HTTPException(404, "联锁规则不存在")
+    await store.delete_interlock(rule_id)
+    hub.interlocks.forget(rule_id)
+    await store.resolve_interlock_alerts([f"interlock:{rule_id}"])
+    await hub.audit.add(user.username, user.role, "删除联锁规则", f"「{old['name']}」（{rule_id}）", None)
     return {"ok": True}
 
 

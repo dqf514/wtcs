@@ -605,6 +605,8 @@ export const NAV_ICONS: Record<string, (p: IconProps) => ReactElement> = {
   schedule: IconCalendar,
   data: IconDatabase,
   insight: IconHealth,
+  interlocks: IconSafety,
+  equipment: IconHealth,
 }
 
 export const SUBSYSTEM_ICONS: Record<string, (p: IconProps) => ReactElement> = {

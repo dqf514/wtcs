@@ -17,6 +17,7 @@ from app.adapters.registry import registry
 from app.core.auth import ROLE_ORDER
 from app.core.config import settings
 from app.services.orchestration import SequenceEngine, compute_system_state, seed_sequences
+from app.services.interlocks import InterlockEngine, seed_interlocks
 from app.models.schemas import (
     AuditEntry,
     CommandRequest,
@@ -328,6 +329,8 @@ class RuntimeHub:
         # 系统级状态机（派生态，snapshot 时重算）与启停序列引擎
         self.system_state: dict[str, Any] = {"state": "standby", "label": "待机", "tone": "dim", "unready_aux": [], "since": ""}
         self.sequences = SequenceEngine(self.audit, lambda: self.safety)
+        # 联锁矩阵引擎（snapshot 时求值；execute_command 时做许可拦截）
+        self.interlocks = InterlockEngine(self.audit, self._interlock_dispatch)
         # 矩阵执行上下文（按矩阵 id 保留最近一次执行状态）
         self._matrix_execs: dict[str, ExecutionContext] = {}
         self._matrix_task: asyncio.Task | None = None
@@ -356,6 +359,7 @@ class RuntimeHub:
         self.started_at = local_now()
         await self._load_equipment_runtime()
         await seed_sequences()
+        await seed_interlocks()
         self._task = asyncio.create_task(self._loop())
         self._ai_task = asyncio.create_task(self._ai_loop())
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
@@ -614,14 +618,35 @@ class RuntimeHub:
             self.sequences.active_kind,
             required if isinstance(required, list) else None,
         )
+        # 联锁矩阵：同一帧测点值求值（迁移沿触发告警/自动停车；恢复沿自动关闭联锁告警）
+        # 变量空间 = 测点 + 顶层状态（running/ready/fault），如 cooling_water.running
+        values = {
+            s["id"]: {
+                **{p["key"]: p["value"] for p in s.get("points", [])},
+                "running": bool(s.get("running")),
+                "ready": bool(s.get("ready")),
+                "fault": bool(s.get("fault")),
+            }
+            for s in statuses
+        }
+        try:
+            await self.interlocks.evaluate(values)
+            await self.interlocks.clear_resolved()
+        except Exception:  # noqa: BLE001
+            logger.exception("联锁求值异常")
         return {
             "overview": overview.model_dump(mode="json"),
             "subsystems": statuses,
             "ai_alerts": self.latest_ai_alerts[:8],
             "system_state": self.system_state,
             "sequence_exec": self.sequences.snapshot(),
+            "interlocks": self.interlocks.status,
             "server_time": local_now().isoformat(timespec="seconds"),
         }
+
+    async def _interlock_dispatch(self, subsystem_id: str, command: str, params: dict[str, Any]) -> str:
+        """联锁引擎的自动执行通道（auto_stop）：直写适配器，绕开指令许可检查（联锁自身即最高优先）。"""
+        return await registry.get(SubsystemId(subsystem_id)).write_command(command, params)
 
     async def overview(self) -> SystemOverview:
         ads = registry.all()
@@ -706,6 +731,14 @@ class RuntimeHub:
             armed = self._confirm_tokens.pop(req.confirm_token)
             if armed.subsystem_id != req.subsystem_id or armed.command != req.command:
                 return CommandResult(ok=False, message="确认令牌与指令不匹配")
+
+        # 联锁许可拦截：许可条件不成立时拒绝下发（fail-safe；急停/复位等安全指令除外）
+        if req.subsystem_id != SubsystemId.safety:
+            blocked = self.interlocks.check_command(req.subsystem_id.value, req.command)
+            if blocked:
+                await self.audit.add(user, role, "联锁拦截", f"{req.subsystem_id.value}.{req.command}：{blocked}", req.subsystem_id.value)
+                logger.warning("联锁拦截: %s → %s.%s：%s", user, req.subsystem_id.value, req.command, blocked)
+                return CommandResult(ok=False, message=blocked)
 
         try:
             msg = await registry.get(req.subsystem_id).write_command(req.command, req.params)
