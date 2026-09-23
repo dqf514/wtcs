@@ -258,6 +258,17 @@ class Store:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_feedbacks_user ON feedbacks(username, created_at);
+            CREATE TABLE IF NOT EXISTS sequences (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'custom',
+                steps TEXT NOT NULL,
+                builtin INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 1,
+                updated_by TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             """
         )
         await self._migrate()
@@ -1116,6 +1127,56 @@ class Store:
             cursor = await c.execute("DELETE FROM feedbacks WHERE id=?", (feedback_id,))
             await c.commit()
             return cursor.rowcount > 0
+
+    # ---------- 启停序列 ----------
+
+    @staticmethod
+    def _seq_row(r: Any) -> dict[str, Any]:
+        row = dict(r)
+        row["steps"] = json.loads(row["steps"])
+        row["builtin"] = bool(row["builtin"])
+        return row
+
+    async def get_sequence(self, seq_id: str) -> dict[str, Any] | None:
+        c = self._require()
+        cursor = await c.execute("SELECT * FROM sequences WHERE id=?", (seq_id,))
+        row = await cursor.fetchone()
+        return self._seq_row(row) if row else None
+
+    async def list_sequences(self) -> list[dict[str, Any]]:
+        c = self._require()
+        cursor = await c.execute("SELECT * FROM sequences ORDER BY created_at")
+        rows = await cursor.fetchall()
+        return [self._seq_row(r) for r in rows]
+
+    async def upsert_sequence(
+        self,
+        seq_id: str,
+        name: str,
+        kind: str,
+        steps: list[dict[str, Any]],
+        builtin: bool = False,
+        updated_by: str = "",
+    ) -> dict[str, Any]:
+        """新建或更新序列；更新时 version 自增（配置留痕）。"""
+        now = local_now().isoformat(timespec="seconds")
+        async with self._lock:
+            c = self._require()
+            cursor = await c.execute("SELECT version, created_at FROM sequences WHERE id=?", (seq_id,))
+            old = await cursor.fetchone()
+            if old is None:
+                await c.execute(
+                    "INSERT INTO sequences(id, name, kind, steps, builtin, version, updated_by, updated_at, created_at)"
+                    " VALUES(?,?,?,?,?,1,?,?,?)",
+                    (seq_id, name, kind, json.dumps(steps, ensure_ascii=False), int(builtin), updated_by, now, now),
+                )
+            else:
+                await c.execute(
+                    "UPDATE sequences SET name=?, kind=?, steps=?, version=?, updated_by=?, updated_at=? WHERE id=?",
+                    (name, kind, json.dumps(steps, ensure_ascii=False), int(old["version"]) + 1, updated_by, now, seq_id),
+                )
+            await c.commit()
+        return (await self.get_sequence(seq_id)) or {}
 
     # ---------- 排程计划 ----------
 

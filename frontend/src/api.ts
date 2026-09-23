@@ -53,6 +53,55 @@ export interface Feedback {
   created_at: string
 }
 
+/** 系统级运行状态机 */
+export interface SystemStateInfo {
+  state: 'standby' | 'preparing' | 'ready' | 'running' | 'stopping' | 'e_stop' | 'safety_fault'
+  label: string
+  tone: string
+  /** 距就绪还差的辅机名称（待机/准备中时有值） */
+  unready_aux: string[]
+  since: string
+}
+
+/** 启停序列 */
+export interface SequenceStepDef {
+  label: string
+  subsystem: string
+  command: string
+  params?: Record<string, unknown>
+  wait?: { kind: string; point?: string; value?: number; timeout_s?: number }
+}
+export interface SequenceDef {
+  id: string
+  name: string
+  kind: 'startup' | 'shutdown' | 'custom'
+  steps: SequenceStepDef[]
+  builtin: boolean
+  version: number
+  updated_by: string
+  updated_at: string
+}
+export interface SequenceStepStatus {
+  label: string
+  subsystem: string
+  command: string
+  status: 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
+  message: string
+}
+export interface SequenceExecution {
+  id: string
+  seq_id: string
+  name: string
+  kind: string
+  state: 'running' | 'succeeded' | 'failed' | 'aborted'
+  operator: string
+  started_at: string
+  finished_at: string
+  error: string
+  current_step: number
+  steps: SequenceStepStatus[]
+}
+
 /** 项目 */
 export interface Project {
   id: string
@@ -988,6 +1037,16 @@ export const api = {
   /** 排程展示大屏：privacy=1 服务端即去标识化（排队号/时间窗/状态/资源），privacy=0 附完整字段 */
   schedulesDisplay: (params: { days?: number; privacy?: 0 | 1 } = {}) =>
     request<ScheduleDisplay>(`/api/schedules/display?days=${params.days ?? 2}&privacy=${params.privacy ?? 1}`),
+
+  // ---------- 系统状态机与启停序列 ----------
+  systemState: () => request<SystemStateInfo>('/api/system/state'),
+  listSequences: () => request<SequenceDef[]>('/api/sequences'),
+  executeSequence: (id: string) =>
+    request<SequenceExecution>(`/api/sequences/${encodeURIComponent(id)}/execute`, { method: 'POST' }),
+  sequenceExecution: () => request<SequenceExecution>('/api/sequence-execution'),
+  abortSequence: () => request<{ ok: boolean }>('/api/sequence-execution/abort', { method: 'POST' }),
+  updateSequence: (id: string, patch: { name?: string; steps?: SequenceStepDef[] }) =>
+    request<SequenceDef>(`/api/sequences/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) }),
 }
 
 /** 备份下载需要带 Bearer，不能用裸 <a href>：fetch 成 blob 再触发下载 */

@@ -365,6 +365,12 @@ function Shell({ user, onLogout }: { user: UserInfo; onLogout: () => void }) {
         <header className="topbar topbar--compact">
           <div className="topbar-left">
             <h1 className="page-title">{pageTitle}</h1>
+            {/* 系统级状态机徽章：全站可见，一眼判定当前能否开车 */}
+            {frame?.system_state && (
+              <span className={`badge ${frame.system_state.tone}`} title={frame.system_state.unready_aux.length ? `未就绪：${frame.system_state.unready_aux.join('、')}` : '系统级运行状态'}>
+                系统 · {frame.system_state.label}
+              </span>
+            )}
             <span className="badge ok hide-sm">建设期全仿真</span>
           </div>
           <div className="top-meta">

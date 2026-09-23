@@ -4127,3 +4127,63 @@ html[data-sidebar="expanded"] {
 .form-row--top > label {
   padding-top: 8px;
 }
+
+/* —— 一键启停序列面板 —— */
+.seq-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+.seq-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-1);
+}
+.seq-step.active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.seq-step-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  color: var(--muted);
+}
+.seq-step.active .seq-step-icon {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  animation: 1.4s ease-in-out infinite alert-pulse;
+}
+.seq-step.done .seq-step-icon {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--ok);
+}
+.seq-step.failed {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+}
+.seq-step.failed .seq-step-icon {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+.seq-step.skipped {
+  opacity: 0.5;
+}
+.seq-step-label {
+  font-weight: 600;
+  flex: 1;
+}
+.seq-step-msg {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+}

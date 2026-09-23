@@ -7,6 +7,7 @@ import { keyReadings } from '../subsystems'
 import { useCommand } from '../hooks/useCommand'
 import { useTelemetry } from '../hooks/useTelemetry'
 import { MiniTrend } from '../components/AnalogBar'
+import { SequencePanel } from '../components/SequencePanel'
 import { CommandButton } from '../components/CommandButton'
 import { ConfirmModal } from '../components/Modal'
 import { Gauge } from '../components/Gauge'
@@ -402,6 +403,7 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
 
           {canCommand && (
             <div className="cmd-groups">
+              <SequencePanel frame={frame} toast={toast} />
               <div className="cmd-block">
                 <div className="label-cap cmd-block-head">风机控制</div>
                 <div className="cmd-row">

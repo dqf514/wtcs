@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from app.adapters.registry import registry
 from app.core.auth import ROLE_ORDER
 from app.core.config import settings
+from app.services.orchestration import SequenceEngine, compute_system_state, seed_sequences
 from app.models.schemas import (
     AuditEntry,
     CommandRequest,
@@ -324,6 +325,9 @@ class RuntimeHub:
         self._exec_lock = asyncio.Lock()
         # 当前采集记录器（遥测 tick 写 run_samples）
         self._recorder: RunRecorder | None = None
+        # 系统级状态机（派生态，snapshot 时重算）与启停序列引擎
+        self.system_state: dict[str, Any] = {"state": "standby", "label": "待机", "tone": "dim", "unready_aux": [], "since": ""}
+        self.sequences = SequenceEngine(self.audit, lambda: self.safety)
         # 矩阵执行上下文（按矩阵 id 保留最近一次执行状态）
         self._matrix_execs: dict[str, ExecutionContext] = {}
         self._matrix_task: asyncio.Task | None = None
@@ -351,6 +355,7 @@ class RuntimeHub:
                 logger.warning("子系统 %s 连接失败: %s", ad.subsystem_id.value, ad.state.value)
         self.started_at = local_now()
         await self._load_equipment_runtime()
+        await seed_sequences()
         self._task = asyncio.create_task(self._loop())
         self._ai_task = asyncio.create_task(self._ai_loop())
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
@@ -372,6 +377,7 @@ class RuntimeHub:
             ctx.pause_event.set()
         if self._profile_ctx is not None:
             self._profile_ctx.abort_requested = True
+        await self.sequences.stop()
         for task in (self._task, self._ai_task, self._maintenance_task, self._matrix_task,
                      self._profile_task, self._health_task, self._mqtt_task):
             if task:
@@ -600,10 +606,20 @@ class RuntimeHub:
                     }
                 )
         overview = await self.overview()
+        # 系统级状态机：由刚采集的子系统状态聚合（辅机清单可在设置中覆盖）
+        required = self.live_settings.get("ready_required_subsystems")
+        self.system_state = compute_system_state(
+            statuses,
+            self.safety.value,
+            self.sequences.active_kind,
+            required if isinstance(required, list) else None,
+        )
         return {
             "overview": overview.model_dump(mode="json"),
             "subsystems": statuses,
             "ai_alerts": self.latest_ai_alerts[:8],
+            "system_state": self.system_state,
+            "sequence_exec": self.sequences.snapshot(),
             "server_time": local_now().isoformat(timespec="seconds"),
         }
 

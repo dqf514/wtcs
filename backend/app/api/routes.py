@@ -63,6 +63,7 @@ from app.services import backup as backup_svc
 from app.services import mqtt_pub
 from app.services.extras import build_report_html, compute_run_summary, nl_query, run_ai_inspection, twin_snapshot
 from app.services.health import health as health_svc
+from app.services.orchestration import validate_steps
 from app.services.runtime import hub
 from app.services.store import WIDE_POINT_KEYS, store
 
@@ -702,6 +703,69 @@ async def reset_branding(
     await _bump_branding_version()
     await hub.audit.add(user.username, user.role, "恢复默认品牌标识", f"{BRANDING_KINDS[kind]}", None)
     return await get_branding() | {"ok": True}
+
+
+# ---------- 系统状态机与启停序列（总控协调核心） ----------
+
+@router.get("/system/state")
+async def get_system_state(user: Annotated[UserInfo, Depends(current_user)]):
+    """系统级运行状态（待机/准备中/就绪/运行中/停车中/急停/安全异常），由子系统状态实时聚合。"""
+    return hub.system_state
+
+
+@router.get("/sequences")
+async def list_sequences(user: Annotated[UserInfo, Depends(current_user)]):
+    return await store.list_sequences()
+
+
+@router.put("/sequences/{seq_id}")
+async def update_sequence(
+    seq_id: str,
+    body: dict,
+    user: Annotated[UserInfo, Depends(require_roles(Role.admin))],
+):
+    seq = await store.get_sequence(seq_id)
+    if seq is None:
+        raise HTTPException(404, "序列不存在")
+    name = str(body.get("name") or seq["name"])
+    steps = body.get("steps", seq["steps"])
+    try:
+        steps = validate_steps(steps)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    row = await store.upsert_sequence(seq_id, name, seq["kind"], steps, builtin=seq["builtin"], updated_by=user.username)
+    await hub.audit.add(user.username, user.role, "更新序列", f"{name}（v{row.get('version')}）", None)
+    return row
+
+
+@router.post("/sequences/{seq_id}/execute")
+async def execute_sequence(
+    seq_id: str,
+    user: Annotated[UserInfo, Depends(require_roles(Role.operator, Role.maintainer))],
+):
+    seq = await store.get_sequence(seq_id)
+    if seq is None:
+        raise HTTPException(404, "序列不存在")
+    try:
+        return await hub.sequences.execute(seq, user.username, user.role)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/sequence-execution")
+async def get_sequence_execution(user: Annotated[UserInfo, Depends(current_user)]):
+    """进行中或最近一次序列执行的状态（步骤进度）。"""
+    return hub.sequences.snapshot() or {"state": "none"}
+
+
+@router.post("/sequence-execution/abort")
+async def abort_sequence_execution(
+    user: Annotated[UserInfo, Depends(require_roles(Role.operator, Role.maintainer))],
+):
+    ok = await hub.sequences.abort(user.username, user.role)
+    if not ok:
+        raise HTTPException(409, "当前没有执行中的序列")
+    return {"ok": True}
 
 
 # ---------- 用户反馈（登录可提交，服务端 5 分钟限流；查看/处理仅管理员） ----------

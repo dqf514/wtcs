@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { getToken, setToken, setCurrentUser, type AiAlert, type Overview, type SubsystemStatus } from '../api'
+import { getToken, setToken, setCurrentUser, type AiAlert, type Overview, type SequenceExecution, type SubsystemStatus, type SystemStateInfo } from '../api'
 
 export interface TelemetryFrame {
   overview: Overview
   subsystems: SubsystemStatus[]
   ai_alerts?: AiAlert[]
+  /** 系统级状态机（待机/准备中/就绪/运行中/停车中/急停/安全异常） */
+  system_state?: SystemStateInfo
+  /** 进行中或最近一次的启停序列执行 */
+  sequence_exec?: SequenceExecution | null
   server_time: string
 }
 

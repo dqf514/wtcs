@@ -390,13 +390,13 @@ async def run_ai_inspection(safety: SafetyLevel, overview_wind: float) -> list[d
                 alerts.append(_alert("critical", st.id.value, st.name, f"风速严重超限：{speed:.1f} m/s", now, "wind_high"))
             elif speed > 200:
                 alerts.append(_alert("alarm", st.id.value, st.name, f"风速超限：{speed:.1f} m/s", now, "wind_high"))
-        if st.id == SubsystemId.cooling_water:
+        if st.id == SubsystemId.cooling_water and vals.get("running"):
             supply = float(vals.get("supply_temp") or 0)
             if supply > 18:
                 alerts.append(_alert("critical", st.id.value, st.name, f"供水温度严重偏高：{supply:.1f} ℃", now, "supply_temp_high"))
             elif supply > 14:
                 alerts.append(_alert("warning", st.id.value, st.name, f"供水温度偏高：{supply:.1f} ℃", now, "supply_temp_high"))
-        if st.id == SubsystemId.compressed_air:
+        if st.id == SubsystemId.compressed_air and vals.get("running"):
             pressure = float(vals.get("pressure") or 0)
             if pressure < 12:
                 alerts.append(_alert("alarm", st.id.value, st.name, f"压缩空气压力过低：{pressure:.1f} bar", now, "pressure_low"))

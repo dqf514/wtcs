@@ -49,15 +49,15 @@ class SimAdapter(SubsystemAdapter):
             self._values["ready"] = not self._values.get("fault", False)
 
         elif sid == SubsystemId.cooling_water:
-            base = 8.0 + 0.3 * math.sin(self._t / 20)
+            running = bool(self._values.get("running", False))
+            base = 8.0 + 0.3 * math.sin(self._t / 20) if running else 25.0
             self._values["supply_temp"] = base
-            self._values["return_temp"] = base + 4.5 + wind * 0.02
-            self._values["flow"] = 180 + wind * 0.5
-            self._values["pressure"] = 3.2
-            self._values["chiller1_on"] = True
-            self._values["chiller2_on"] = wind > 80
+            self._values["return_temp"] = base + (4.5 + wind * 0.02 if running else 0.0)
+            self._values["flow"] = (180 + wind * 0.5) if running else 0.0
+            self._values["pressure"] = 3.2 if running else 0.0
+            self._values["chiller1_on"] = running
+            self._values["chiller2_on"] = running and wind > 80
             self._values["chiller3_on"] = False
-            self._values["running"] = True
             self._values["ready"] = True
 
         elif sid == SubsystemId.rrs:
@@ -111,8 +111,8 @@ class SimAdapter(SubsystemAdapter):
             self._values["ready"] = True
 
         elif sid == SubsystemId.compressed_air:
-            self._values["pressure"] = 20.0 + random.uniform(-0.2, 0.2)
-            self._values["running"] = True
+            running = bool(self._values.get("running", False))
+            self._values["pressure"] = (20.0 + random.uniform(-0.2, 0.2)) if running else 0.0
             self._values["ready"] = True
 
         elif sid == SubsystemId.safety:
