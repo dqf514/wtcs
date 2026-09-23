@@ -18,6 +18,7 @@ from app.core.auth import ROLE_ORDER
 from app.core.config import settings
 from app.services.orchestration import SequenceEngine, compute_system_state, seed_sequences
 from app.services.interlocks import InterlockEngine, seed_interlocks
+from app.services.coordination import validate_params
 from app.models.schemas import (
     AuditEntry,
     CommandRequest,
@@ -206,6 +207,10 @@ DEFAULT_LIVE_SETTINGS: dict[str, Any] = {
     "mqtt_host": "127.0.0.1",
     "mqtt_port": 1883,
     "mqtt_topic_prefix": "wtcs",
+    # 跨子系统参数联动：路面速比 / 抽吸比建议值 / 联动生效风速阈值
+    "link_belt_ratio": 1.0,
+    "link_suction_ratio": 40,
+    "link_wind_threshold": 5,
 }
 
 
@@ -331,6 +336,8 @@ class RuntimeHub:
         self.sequences = SequenceEngine(self.audit, lambda: self.safety)
         # 联锁矩阵引擎（snapshot 时求值；execute_command 时做许可拦截）
         self.interlocks = InterlockEngine(self.audit, self._interlock_dispatch)
+        # 最近一帧测点值（snapshot 时更新；联动 preview / 限值校验复用）
+        self.last_values: dict[str, dict[str, Any]] = {}
         # 矩阵执行上下文（按矩阵 id 保留最近一次执行状态）
         self._matrix_execs: dict[str, ExecutionContext] = {}
         self._matrix_task: asyncio.Task | None = None
@@ -629,6 +636,8 @@ class RuntimeHub:
             }
             for s in statuses
         }
+        # 供参数联动 preview 复用（≤一个遥测周期的延迟）
+        self.last_values = values
         try:
             await self.interlocks.evaluate(values)
             await self.interlocks.clear_resolved()
@@ -699,6 +708,12 @@ class RuntimeHub:
         cmd_spec = next((c for c in contract.commands if c.name == req.command), None)
         if not cmd_spec:
             return CommandResult(ok=False, message="未知命令")
+
+        # 参数限值前置校验：超出安全限值直接拒绝（联动/手动/任何入口一视同仁）
+        param_err = validate_params(dict(req.params or {}))
+        if param_err:
+            await self.audit.add(user, role, "指令被拒", f"{req.subsystem_id.value}.{req.command}：{param_err}", req.subsystem_id.value)
+            return CommandResult(ok=False, message=param_err)
 
         # 指令级角色校验：低于 CommandSpec.min_role 拒绝
         try:

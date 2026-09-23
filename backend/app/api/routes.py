@@ -65,6 +65,7 @@ from app.services.extras import build_report_html, compute_run_summary, nl_query
 from app.services.health import health as health_svc
 from app.services.orchestration import validate_steps
 from app.services.interlocks import ExprError, validate_rule
+from app.services.coordination import apply_linkage, preview_linkage
 from app.services.runtime import hub
 from app.services.store import WIDE_POINT_KEYS, store
 
@@ -836,8 +837,40 @@ async def delete_interlock(
     return {"ok": True}
 
 
-# ---------- 用户反馈（登录可提交，服务端 5 分钟限流；查看/处理仅管理员） ----------
+# ---------- 跨子系统参数联动（设定值协调） ----------
 
+@router.post("/coordination/preview")
+async def coordination_preview(
+    body: dict,
+    user: Annotated[UserInfo, Depends(current_user)],
+):
+    """给定目标风速，返回关联子系统的建议设定与冲突告警（不落任何指令）。"""
+    try:
+        wind = float(body.get("wind_speed"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "wind_speed 必须是数值") from None
+    return preview_linkage(wind, hub.last_values, hub.live_settings)
+
+
+@router.post("/coordination/apply")
+async def coordination_apply(
+    body: dict,
+    user: Annotated[UserInfo, Depends(require_roles(Role.operator, Role.maintainer))],
+):
+    """批量下发联动设定（操作员在联动弹窗确认后调用）：逐项限值校验+联锁许可+审计。"""
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(400, "items 不能为空")
+    if len(items) > 20:
+        raise HTTPException(400, "单次联动最多 20 项")
+    results = await apply_linkage(
+        items, user=user.username, role=user.role,
+        audit=hub.audit, check_command=hub.interlocks.check_command,
+    )
+    return {"ok": all(r["ok"] for r in results), "results": results}
+
+
+# ---------- 用户反馈（登录可提交，服务端 5 分钟限流；查看/处理仅管理员） ----------
 FEEDBACK_DIR = DATA_DIR / "feedback"
 _FEEDBACK_MIN_INTERVAL = 300  # 同一用户两次提交的最小间隔（秒）
 _FEEDBACK_MAX_CONTENT = 2000

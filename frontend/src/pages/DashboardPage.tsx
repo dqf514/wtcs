@@ -7,6 +7,7 @@ import { keyReadings } from '../subsystems'
 import { useCommand } from '../hooks/useCommand'
 import { useTelemetry } from '../hooks/useTelemetry'
 import { MiniTrend } from '../components/AnalogBar'
+import { LinkageModal } from '../components/LinkageModal'
 import { SequencePanel } from '../components/SequencePanel'
 import { CommandButton } from '../components/CommandButton'
 import { ConfirmModal } from '../components/Modal'
@@ -196,6 +197,8 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
   const [scenario, setScenario] = useState<Scenario>('气动实验')
   const [speed, setSpeed] = useState(40)
   const [yaw, setYaw] = useState(0)
+  // 风速协调弹窗：非 null 时打开（值为目标风速）
+  const [linkSpeed, setLinkSpeed] = useState<number | null>(null)
   const [history, setHistory] = useState<{ wind_speed: number; temperature: number }[]>([])
 
   // 执行态势：运行中的矩阵/实验流水线进度（5s 轮询，有则显示）
@@ -286,8 +289,36 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
   const fxNormal = POINT_META.fx.normal
   const fxOut = balanceFx != null && (balanceFx < fxNormal[0] || balanceFx > fxNormal[1])
 
+  // 风速协调：主操作（设定风速）+ 勾选的联动项批量下发
+  async function applyWindLinkage(items: { id: string; label: string; subsystem: string; command: string; params: Record<string, unknown> }[]) {
+    const target = linkSpeed
+    setLinkSpeed(null)
+    if (target == null) return
+    const ok = await send('main_fan', 'set_speed', { target_speed: target }, { confirmed: true })
+    if (!ok || items.length === 0) return
+    try {
+      const res = await api.applyLinkage(items)
+      const failed = res.results.filter((r) => !r.ok)
+      if (failed.length > 0) {
+        toast(`联动部分被拒：${failed.map((f) => `${f.label}（${f.message}）`).join('；')}`, false)
+      } else {
+        toast(`联动已应用：${res.results.map((r) => r.label).join('、')}`)
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '联动下发失败', false)
+    }
+  }
+
   return (
     <div>
+      {linkSpeed != null && (
+        <LinkageModal
+          speed={linkSpeed}
+          fanRunning={fanRunning}
+          onClose={() => setLinkSpeed(null)}
+          onApply={applyWindLinkage}
+        />
+      )}
       {estopActive && (
         <div className="estop-bar" role="alert">
           急停已激活：风机与全部运动机构已停止。故障排除后，由维护员在「安全」区执行急停复位。
@@ -421,18 +452,13 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
                     <span className="cmd-unit">m/s</span>
                   </div>
                   <div className="ctl-row">
-                    {/* 设定风速即「按设定风速运行」：停机时=按该风速启动，运行中=平滑调整至该风速；停止独立成键 */}
+                    {/* 设定风速即「按设定风速运行」：弹出风速协调窗，可顺带应用路面/抽吸/尾气联动建议 */}
                     <Ctl
                       icon={fanRunning ? <IconDashboard size={22} /> : <IconPlay size={22} />}
                       label={fanRunning ? '调整风速' : '设定风速启动'}
                       variant={fanRunning ? '' : 'primary'}
-                      title={fanRunning ? `将目标风速调整为 ${speed} m/s` : `按 ${speed} m/s 设定风速并启动风机`}
-                      confirmMessage={
-                        fanRunning
-                          ? `确认将运行中的目标风速调整为 ${speed} m/s？风机将平滑加减速至该工况。`
-                          : `确认按 ${speed} m/s 启动风机？风机将升速至该工况运行。`
-                      }
-                      onClick={() => send('main_fan', 'set_speed', { target_speed: speed }, { confirmed: true })}
+                      title={fanRunning ? `将目标风速调整为 ${speed} m/s（可联动路面/抽吸/尾气）` : `按 ${speed} m/s 设定风速并启动风机（可联动辅机设定）`}
+                      onClick={() => setLinkSpeed(speed)}
                     />
                     <Ctl
                       icon={<IconStop size={22} />}

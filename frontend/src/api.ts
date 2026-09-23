@@ -142,7 +142,32 @@ export interface InterlockStatus {
   trigger_count: number
 }
 
-/** 项目 */
+/** 参数联动建议项 */
+export interface LinkageItem {
+  id: string
+  label: string
+  subsystem: string
+  command: string
+  params: Record<string, unknown>
+  param_key: string
+  unit: string
+  current: number | null
+  suggested: number | null
+  default_checked: boolean
+  warn: string
+}
+export interface LinkagePreview {
+  ok: boolean
+  reject: string
+  warnings: string[]
+  items: LinkageItem[]
+}
+export interface LinkageResult {
+  id: string
+  label: string
+  ok: boolean
+  message: string
+}/** 项目 */
 export interface Project {
   id: string
   project_no: string
@@ -1097,6 +1122,12 @@ export const api = {
     request<InterlockRule>(`/api/interlocks/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) }),
   deleteInterlock: (id: string) =>
     request<{ ok: boolean }>(`/api/interlocks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ---------- 跨子系统参数联动 ----------
+  linkagePreview: (wind_speed: number) =>
+    request<LinkagePreview>('/api/coordination/preview', { method: 'POST', body: JSON.stringify({ wind_speed }) }),
+  applyLinkage: (items: { id: string; label: string; subsystem: string; command: string; params: Record<string, unknown> }[]) =>
+    request<{ ok: boolean; results: LinkageResult[] }>('/api/coordination/apply', { method: 'POST', body: JSON.stringify({ items }) }),
 }
 
 /** 备份下载需要带 Bearer，不能用裸 <a href>：fetch 成 blob 再触发下载 */
