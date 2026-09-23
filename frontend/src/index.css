@@ -1422,6 +1422,18 @@ html[data-sidebar="expanded"] {
   letter-spacing: 0.12em;
   font-weight: 700;
 }
+.estop-ctl {
+  position: relative;
+  overflow: hidden;
+}
+.estop-ctl-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: color-mix(in srgb, var(--danger) 35%, transparent);
+  pointer-events: none;
+}
 .estop-btn {
   border: 3px solid var(--danger);
   background: var(--bg-1);

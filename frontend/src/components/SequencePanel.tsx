@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
-import { api, type SequenceDef } from '../api'
+import { api, hasMinRole, type SequenceDef } from '../api'
 import type { TelemetryFrame } from '../hooks/useTelemetry'
+import { useCommand } from '../hooks/useCommand'
 import { CommandButton } from './CommandButton'
+import { EStopButton } from './EStopButton'
 import { Modal, ConfirmModal } from './Modal'
-import { IconPlay, IconStop } from './icons'
+import { IconPlay, IconStop, IconRestore } from './icons'
 
 const STEP_ICON: Record<string, { text: string; cls: string }> = {
   pending: { text: '○', cls: 'dim' },
@@ -32,6 +34,11 @@ export function SequencePanel({ frame, toast }: { frame: TelemetryFrame | null; 
   const sysState = frame?.system_state
   const exec = frame?.sequence_exec ?? null
   const busy = exec?.state === 'running'
+
+  // 急停/急停复位整合进本区（原顶栏圆形按钮与底部安全条已移除）；e_stop 走安全豁免路径，后端不要求 confirm_token
+  const { send } = useCommand(toast)
+  const canMaintain = hasMinRole('维护员')
+  const estopActive = frame?.overview?.safety === '急停'
 
   useEffect(() => {
     api.listSequences().then(setSeqs).catch(() => {})
@@ -94,6 +101,22 @@ export function SequencePanel({ frame, toast }: { frame: TelemetryFrame | null; 
           >
             一键停车
           </CommandButton>
+          {/* 急停：按住 1 秒触发（防误触）；已处于急停时置灰 */}
+          <EStopButton ctl disabled={estopActive} onFire={() => send('safety', 'e_stop')} />
+          {/* 急停复位：维护员+，弹显著确认（高风险指令） */}
+          {canMaintain && (
+            <CommandButton
+              icon={<IconRestore size={22} />}
+              disabled={!estopActive}
+              title={estopActive ? '故障排除后复位急停状态' : '当前未处于急停状态'}
+              confirmTitle="急停复位"
+              confirmMessage="确认复位急停状态？请确认故障已排除、现场人员安全后再执行。"
+              confirmDanger
+              onClick={() => send('safety', 'reset_e_stop', {}, { confirmed: true })}
+            >
+              急停复位
+            </CommandButton>
+          )}
           {busy && !modalOpen && (
             <button type="button" className="btn" onClick={() => setModalOpen(true)}>
               查看执行进度

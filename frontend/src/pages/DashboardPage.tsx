@@ -16,7 +16,6 @@ import { Tabs } from '../components/Tabs'
 import {
   IconDashboard,
   IconPlay,
-  IconRestore,
   IconRrs,
   IconStop,
   IconSubsystems,
@@ -109,7 +108,7 @@ function Ctl({
 
 type QuickKind = 'run' | 'acquire' | 'belt' | 'moving'
 
-/** 各子系统的快速启停命令映射（无参数下发，使用系统当前设定值）；safety 走顶栏急停，不在此列 */
+/** 各子系统的快速启停命令映射（无参数下发，使用系统当前设定值）；safety 急停/复位在一键启停区，不在此列 */
 const QUICK_CMD: Record<string, { start?: string; stop?: string; kind: QuickKind; label: string }> = {
   main_fan: { start: 'start', stop: 'stop', kind: 'run', label: '风机' },
   cooling_water: { start: 'start', stop: 'stop', kind: 'run', label: '冷却水' },
@@ -256,7 +255,6 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
   const overview = frame?.overview
   const subsystems = useMemo(() => frame?.subsystems ?? [], [frame])
   const canCommand = hasMinRole('操作员')
-  const canMaintain = hasMinRole('维护员')
   // 挂牌/维护模式（LOTO）：挂牌子系统卡片加角标、快速启停置灰
   const lockoutMap = useMemo(
     () => new Map((frame?.lockouts ?? []).map((l) => [l.subsystem_id, l])),
@@ -331,7 +329,7 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
       )}
       {estopActive && (
         <div className="estop-bar" role="alert">
-          急停已激活：风机与全部运动机构已停止。故障排除后，由维护员在「安全」区执行急停复位。
+          急停已激活：风机与全部运动机构已停止。故障排除后，由维护员在「系统序列 · 一键启停」区执行急停复位。
         </div>
       )}
 
@@ -582,22 +580,6 @@ export function DashboardPage({ toast }: { toast: (msg: string, ok?: boolean) =>
                   </div>
                 </div>
               )}
-
-              <div className="safety-zone">
-                <div className="safety-zone-title">安全</div>
-                {/* 急停已提升为顶栏常驻（任何页面可及），此处保留维护员的急停复位 */}
-                <span className="safety-zone-note">急停按钮常驻页面顶栏，按住 1 秒触发</span>
-                {canMaintain && (
-                  <Ctl
-                    icon={<IconRestore size={22} />}
-                    label="急停复位"
-                    title="故障排除后复位急停状态"
-                    confirmMessage="确认复位急停状态？请确认故障已排除、现场人员安全后再执行。"
-                    confirmDanger
-                    onClick={() => send('safety', 'reset_e_stop', {}, { confirmed: true })}
-                  />
-                )}
-              </div>
             </div>
           )}
         </div>

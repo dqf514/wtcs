@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { IconAbort } from './icons'
 
 const HOLD_MS = 1000
 
@@ -6,8 +7,9 @@ const HOLD_MS = 1000
  * 急停按钮（防误触）：按住 1 秒才触发，松开/移出即取消；
  * 视觉独占安全区（警示纹由 .safety-zone 提供）。键盘按住 Space/Enter 同样有效。
  * compact：顶栏常驻小尺寸变体（隐藏提示文字，按住时环形色带仍表达进度）。
+ * ctl：一键启停区大图标变体（.ctl-btn danger，与开车/停车按钮同风格，按住时红色填充表达进度）。
  */
-export function EStopButton({ onFire, disabled, compact }: { onFire: () => void; disabled?: boolean; compact?: boolean }) {
+export function EStopButton({ onFire, disabled, compact, ctl }: { onFire: () => void; disabled?: boolean; compact?: boolean; ctl?: boolean }) {
   const [progress, setProgress] = useState(0)
   const rafRef = useRef<number | undefined>(undefined)
   const startRef = useRef(0)
@@ -43,6 +45,32 @@ export function EStopButton({ onFire, disabled, compact }: { onFire: () => void;
   }
 
   useEffect(() => cancel, [])
+
+  if (ctl) {
+    // 大图标变体：与一键启停按钮同风格，红色危险态；按住进度用红色填充表达
+    return (
+      <button
+        type="button"
+        className="ctl-btn danger estop-ctl"
+        disabled={disabled}
+        onPointerDown={start}
+        onPointerUp={cancel}
+        onPointerLeave={cancel}
+        onKeyDown={(e) => {
+          if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) start()
+        }}
+        onKeyUp={(e) => {
+          if (e.key === ' ' || e.key === 'Enter') cancel()
+        }}
+        onContextMenu={(e) => e.preventDefault()}
+        title="按住 1 秒触发急停"
+      >
+        <span className="estop-ctl-fill" style={{ width: `${progress * 100}%` }} />
+        <IconAbort size={22} />
+        <span className="label-cap">{progress > 0 ? '松开取消' : '急停'}</span>
+      </button>
+    )
+  }
 
   return (
     <button

@@ -19,10 +19,8 @@ import { PageErrorBoundary } from './components/PageErrorBoundary'
 import { FullscreenButton, UserMenu } from './components/UserMenu'
 import { AlertCenterModal } from './components/AlertCenterModal'
 import { FeedbackWidget } from './components/FeedbackWidget'
-import { EStopButton } from './components/EStopButton'
 import { CommandPalette } from './components/CommandPalette'
 import { useTelemetry } from './hooks/useTelemetry'
-import { useCommand } from './hooks/useCommand'
 import { LoginPage } from './pages/LoginPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { ExperimentsPage } from './pages/ExperimentsPage'
@@ -305,9 +303,6 @@ function Shell({ user, onLogout }: { user: UserInfo; onLogout: () => void }) {
     window.setTimeout(() => setToastMsg(null), 3500)
   }
 
-  // 全局命令下发（顶栏常驻急停用）；e_stop 后端不要求 confirm_token
-  const { send } = useCommand(toast)
-
   useEffect(() => {
     const tick = () => {
       const d = new Date()
@@ -389,10 +384,6 @@ function Shell({ user, onLogout }: { user: UserInfo; onLogout: () => void }) {
               <span className="mono">Ctrl K</span>
             </button>
             <span className="mono hide-sm topbar-clock">{now}</span>
-            {/* 全局急停：顶栏常驻、任何页面可及（HMI 惯例），按住 1 秒触发防误触 */}
-            {hasMinRole('操作员') && (
-              <EStopButton compact onFire={() => send('safety', 'e_stop')} />
-            )}
             {/* 大屏在新窗口打开（可拖到投影/电视后 F11），不顶掉当前操作台页面 */}
             <button
               type="button"
