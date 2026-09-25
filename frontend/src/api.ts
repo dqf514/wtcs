@@ -4,6 +4,7 @@ export interface UserInfo {
   username: string
   display_name: string
   role: Role
+  must_change_password?: boolean
   /** 角色页面集合（登录响应不带，App 登录后会用 /auth/me 补全，故为可选） */
   pages?: string[]
 }
@@ -695,6 +696,37 @@ export interface NetworkInfo {
   docs: string
 }
 
+export interface DatabaseConfig {
+  engine: 'sqlite' | 'postgresql' | 'mysql'
+  host: string
+  port: number
+  username: string
+  password: string
+  database: string
+  path: string
+  pool_size: number
+  ssl: boolean
+  options: string
+  display_url?: string
+}
+
+export interface DatabaseTestResult {
+  ok: boolean
+  engine?: string
+  error?: string
+  message?: string
+  version?: string
+  path?: string
+  journal_mode?: string
+}
+
+export interface DatabaseExportResult {
+  engine: string
+  path: string
+  tables: Record<string, number>
+  data: Record<string, Record<string, unknown>[]>
+}
+
 export interface OpenPointMeta {
   subsystem: string
   subsystem_name: string
@@ -1054,6 +1086,20 @@ export const api = {
     ),
   deleteBackup: (name: string) =>
     request<{ ok: boolean }>(`/api/system/backups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  // ---------- 系统：数据库管理 ----------
+  databaseConfig: () => request<DatabaseConfig>('/api/system/database'),
+  updateDatabase: (body: DatabaseConfig) =>
+    request<{ ok: boolean; message: string }>('/api/system/database', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  testDatabase: (body?: DatabaseConfig) =>
+    request<DatabaseTestResult>('/api/system/database/test', {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  exportDatabase: () => request<DatabaseExportResult>('/api/system/database/export', { method: 'POST' }),
 
   // ---------- 用户管理（admin） ----------
   listUsers: () => request<UserRow[]>('/api/admin/users'),

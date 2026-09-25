@@ -94,6 +94,7 @@ async def ensure_default_users() -> None:
                 meta["display_name"],
                 meta["role"].value,
             )
+            await store.update_user(username, must_change_password=True)
             logger.info("初始化默认账号: %s（%s）", username, meta["role"].value)
     # 演示档案幂等回填：只补空字段，不覆盖管理员/用户已填写的值
     for username, profile in DEFAULT_USER_PROFILES.items():
@@ -151,7 +152,12 @@ async def authenticate(username: str, password: str) -> TokenResponse:
         settings.jwt_secret,
         algorithm="HS256",
     )
-    info = UserInfo(username=username, display_name=row["display_name"], role=role_value)
+    info = UserInfo(
+        username=username,
+        display_name=row["display_name"],
+        role=role_value,
+        must_change_password=bool(row.get("must_change_password", 0)),
+    )
     logger.info("登录成功: %s（%s）", username, role_value)
     return TokenResponse(access_token=token, user=info)
 
@@ -161,6 +167,7 @@ async def change_password(username: str, old_password: str, new_password: str) -
     if not row or not verify_password(old_password, row["password_hash"]):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="原密码错误")
     await store.set_user_password(username, hash_password(new_password))
+    await store.update_user(username, must_change_password=False)
     logger.info("用户 %s 修改密码", username)
 
 
@@ -194,7 +201,12 @@ async def current_user(
     row = await store.get_user(info.username)
     if row is None or not row.get("enabled", 1):
         raise HTTPException(status_code=401, detail="账号不存在或已停用")
-    return UserInfo(username=row["username"], display_name=row["display_name"], role=row["role"])
+    return UserInfo(
+        username=row["username"],
+        display_name=row["display_name"],
+        role=row["role"],
+        must_change_password=bool(row.get("must_change_password", 0)),
+    )
 
 
 def require_roles(*roles: Role):

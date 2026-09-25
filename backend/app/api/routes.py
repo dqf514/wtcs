@@ -67,6 +67,7 @@ from app.services.orchestration import validate_exp_steps, validate_steps
 from app.services.interlocks import ExprError, validate_rule
 from app.services.coordination import apply_linkage, preview_linkage
 from app.services.runtime import hub
+from app.services.database import DatabaseConfig, db_manager
 from app.services.store import WIDE_POINT_KEYS, store
 
 logger = logging.getLogger(__name__)
@@ -2274,6 +2275,88 @@ async def system_backup_delete(
         raise HTTPException(404, "备份不存在") from exc
     await hub.audit.add(user.username, user.role, "删除备份", name, None)
     return {"ok": True}
+
+
+# ---------- 系统：数据库管理 ----------
+
+
+class DatabaseConfigIn(BaseModel):
+    engine: Literal["sqlite", "postgresql", "mysql"] = "sqlite"
+    host: str = ""
+    port: int = 5432
+    username: str = ""
+    password: str = ""
+    database: str = ""
+    path: str = ""
+    pool_size: int = Field(default=5, ge=1, le=50)
+    ssl: bool = False
+    options: str = ""
+
+
+@router.get("/system/database")
+async def get_database_config(user: Annotated[UserInfo, Depends(current_user)]):
+    cfg = db_manager.config
+    result = cfg.model_dump()
+    result["display_url"] = cfg.display_url()
+    result["password"] = ""  # 不返回明文密码
+    return result
+
+
+@router.put("/system/database")
+async def update_database_config(
+    body: DatabaseConfigIn,
+    user: Annotated[UserInfo, Depends(require_roles(Role.admin))],
+):
+    cfg = DatabaseConfig(
+        engine=body.engine,
+        host=body.host,
+        port=body.port,
+        username=body.username,
+        password=body.password or db_manager.config.password,
+        database=body.database,
+        path=body.path or db_manager.config.path,
+        pool_size=body.pool_size,
+        ssl=body.ssl,
+        options=body.options,
+    )
+    result = await db_manager.apply_config(cfg)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error", "数据库配置失败"))
+    await hub.audit.add(user.username, user.role, "切换数据库", cfg.display_url(), None)
+    return result
+
+
+@router.post("/system/database/test")
+async def test_database_connection(
+    user: Annotated[UserInfo, Depends(current_user)],
+    body: DatabaseConfigIn | None = None):
+    if body:
+        cfg = DatabaseConfig(
+            engine=body.engine,
+            host=body.host,
+            port=body.port,
+            username=body.username,
+            password=body.password or db_manager.config.password,
+            database=body.database,
+            path=body.path or db_manager.config.path,
+            pool_size=body.pool_size,
+            ssl=body.ssl,
+            options=body.options,
+        )
+    else:
+        cfg = None
+    return await db_manager.test_connection(cfg)
+
+
+@router.post("/system/database/export")
+async def export_database(
+    user: Annotated[UserInfo, Depends(require_roles(Role.admin))],
+):
+    if db_manager.config.engine != "sqlite":
+        raise HTTPException(400, "仅 SQLite 数据库支持导出")
+    data = await db_manager.export_sqlite_data()
+    await hub.audit.add(user.username, user.role, "导出数据库", str(data.get("tables", {})), None)
+    return data
 
 
 # ---------- 系统：网络 / 信息 ----------

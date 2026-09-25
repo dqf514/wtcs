@@ -288,9 +288,9 @@ export function IconMatrix(p: IconProps) {
 
 export function IconPlay(p: IconProps) {
   return (
-    <Svg {...p}>
+    <svg className={p.className} width={p.size ?? 20} height={p.size ?? 20} viewBox="0 0 24 24" fill="currentColor">
       <path d="M7 5l12 7-12 7V5z" />
-    </Svg>
+    </svg>
   )
 }
 
@@ -304,9 +304,9 @@ export function IconPause(p: IconProps) {
 
 export function IconStop(p: IconProps) {
   return (
-    <Svg {...p}>
-      <rect x="6" y="6" width="12" height="12" rx="1.5" />
-    </Svg>
+    <svg className={p.className} width={p.size ?? 20} height={p.size ?? 20} viewBox="0 0 24 24" fill="currentColor">
+      <rect x="5" y="5" width="14" height="14" rx="2" />
+    </svg>
   )
 }
 

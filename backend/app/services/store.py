@@ -362,6 +362,8 @@ class Store:
         await self._add_columns("orders", {"customer_id": "TEXT"})
         # customers：行业 / 联系人职务
         await self._add_columns("customers", {"industry": "TEXT DEFAULT ''", "contact_title": "TEXT DEFAULT ''"})
+        # users：首次登录强制改密标记
+        await self._add_columns("users", {"must_change_password": "INTEGER NOT NULL DEFAULT 0"})
 
     async def _add_columns(self, table: str, cols: dict[str, str]) -> None:
         cursor = await self._conn.execute(f"PRAGMA table_info({table})")
@@ -375,6 +377,17 @@ class Store:
         if self._conn is not None:
             await self._conn.close()
             self._conn = None
+
+    async def reconfigure(self, new_path: Path) -> None:
+        """热切换 SQLite 数据库文件（管理界面切换数据库时调用）。"""
+        async with self._lock:
+            if self._conn is not None:
+                await self._conn.close()
+                self._conn = None
+            self.path = new_path
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            await self.init()
+            logger.info("数据库已重新配置: %s", self.path)
 
     def _require(self) -> aiosqlite.Connection:
         if self._conn is None:
@@ -690,6 +703,7 @@ class Store:
         department: str | None = None,
         position: str | None = None,
         notes: str | None = None,
+        must_change_password: bool | None = None,
     ) -> bool:
         """更新角色/姓名/启停/档案字段（None 字段不动），返回是否有该行。"""
         sets: list[str] = []
@@ -703,6 +717,9 @@ class Store:
         if enabled is not None:
             sets.append("enabled=?")
             params.append(1 if enabled else 0)
+        if must_change_password is not None:
+            sets.append("must_change_password=?")
+            params.append(1 if must_change_password else 0)
         for col, val in (
             ("phone", phone),
             ("email", email),
@@ -2216,6 +2233,7 @@ class Store:
         wal = self.path.with_suffix(self.path.suffix + "-wal")
         wal_size = wal.stat().st_size if wal.exists() else 0
         return {
+            "engine": "sqlite",
             "db_path": str(self.path),
             "db_file_bytes": file_size,
             "wal_file_bytes": wal_size,

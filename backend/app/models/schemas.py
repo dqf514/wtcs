@@ -236,6 +236,7 @@ class UserInfo(BaseModel):
     username: str
     display_name: str
     role: str  # 角色名以 users/roles 表为准（支持自定义角色）；内置角色值与 Role 枚举一致
+    must_change_password: bool = False
 
 
 class LoginRequest(BaseModel):

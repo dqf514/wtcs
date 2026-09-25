@@ -18,6 +18,7 @@ import { StatusBar } from './components/StatusBar'
 import { PageErrorBoundary } from './components/PageErrorBoundary'
 import { FullscreenButton, UserMenu } from './components/UserMenu'
 import { AlertCenterModal } from './components/AlertCenterModal'
+import { Modal } from './components/Modal'
 import { FeedbackWidget } from './components/FeedbackWidget'
 import { CommandPalette } from './components/CommandPalette'
 import { useTelemetry } from './hooks/useTelemetry'
@@ -456,6 +457,115 @@ function Shell({ user, onLogout }: { user: UserInfo; onLogout: () => void }) {
   )
 }
 
+function calcPwdStrength(pwd: string): { level: 'weak' | 'medium' | 'strong'; score: number } {
+  let score = 0
+  if (pwd.length >= 6) score++
+  if (pwd.length >= 10) score++
+  if (/[A-Z]/.test(pwd)) score++
+  if (/[0-9]/.test(pwd)) score++
+  if (/[^A-Za-z0-9]/.test(pwd)) score++
+  if (score <= 2) return { level: 'weak', score }
+  if (score <= 3) return { level: 'medium', score }
+  return { level: 'strong', score }
+}
+
+const PWD_STRENGTH_LABELS = { weak: '弱', medium: '中', strong: '强' }
+
+function ForceChangePassword({ onDone }: { onDone: (u: UserInfo) => void }) {
+  const [oldPwd, setOldPwd] = useState('')
+  const [newPwd, setNewPwd] = useState('')
+  const [newPwd2, setNewPwd2] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const strength = newPwd.length >= 6 ? calcPwdStrength(newPwd) : null
+  const mismatch = newPwd2 !== '' && newPwd !== newPwd2
+  const canSubmit = !!oldPwd && newPwd.length >= 6 && newPwd === newPwd2 && !busy
+
+  async function submit() {
+    setBusy(true)
+    setError('')
+    try {
+      await api.changePassword(oldPwd, newPwd)
+      const u = await api.me()
+      setCurrentUser(u)
+      onDone(u)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '密码修改失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="login-page">
+      <Modal open onClose={() => {}} title="首次登录请修改密码" size="sm" closeOnOverlay={false}>
+        <p style={{ marginBottom: 16, color: 'var(--muted)', fontSize: 13, lineHeight: 1.6 }}>
+          为保障账户安全，首次登录必须修改默认密码。
+        </p>
+        <div className="form-row">
+          <label>原密码</label>
+          <input type="password" autoFocus value={oldPwd} onChange={(e) => setOldPwd(e.target.value)} autoComplete="current-password" />
+        </div>
+        <div className="form-row">
+          <label>新密码</label>
+          <div>
+            <input
+              type="password"
+              className={newPwd.length > 0 && newPwd.length < 6 ? 'input-error' : ''}
+              value={newPwd}
+              onChange={(e) => setNewPwd(e.target.value)}
+              autoComplete="new-password"
+              placeholder="至少 6 位"
+            />
+            {strength && (
+              <div className="pwd-strength">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div
+                    key={i}
+                    className={`pwd-strength-bar ${i <= strength.score ? `active ${strength.level}` : ''}`}
+                  />
+                ))}
+                <span className={`pwd-strength-label ${strength.level}`}>
+                  {PWD_STRENGTH_LABELS[strength.level]}
+                </span>
+              </div>
+            )}
+            {newPwd.length > 0 && newPwd.length < 6 && (
+              <div className="field-error">密码至少 6 位</div>
+            )}
+          </div>
+        </div>
+        <div className="form-row">
+          <label>确认密码</label>
+          <div>
+            <input
+              type="password"
+              className={mismatch ? 'input-error' : ''}
+              value={newPwd2}
+              onChange={(e) => setNewPwd2(e.target.value)}
+              autoComplete="new-password"
+              placeholder="再次输入新密码"
+            />
+            {mismatch && <div className="field-error">两次输入的密码不一致</div>}
+          </div>
+        </div>
+        {error && (
+          <div style={{ marginTop: 8, padding: '8px 12px', background: 'color-mix(in srgb, var(--danger) 10%, var(--bg-2))', borderRadius: 'var(--r-sm)', color: 'var(--danger)', fontSize: 12 }}>
+            {error}
+          </div>
+        )}
+        <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
+          <button type="button" className="btn primary" disabled={!canSubmit} onClick={submit}>
+            {busy && <span className="spinner" style={{ marginRight: 6 }} />}
+            {busy ? '提交中…' : '确认修改'}
+          </button>
+        </div>
+      </Modal>
+    </div>
+  )
+}
+
 function AppInner() {
   const [user, setUser] = useState<UserInfo | null>(null)
   const [booting, setBooting] = useState(true)
@@ -500,6 +610,10 @@ function AppInner() {
         }}
       />
     )
+  }
+
+  if (user.must_change_password) {
+    return <ForceChangePassword onDone={(u) => setUser(u)} />
   }
 
   return (

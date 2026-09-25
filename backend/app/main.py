@@ -17,14 +17,22 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if settings.jwt_secret == DEFAULT_JWT_SECRET:
-        logger.warning(
-            "JWT 密钥为默认值，存在安全风险！请设置环境变量 WTCS_SECRET_KEY 后再上线。"
-        )
+        if settings.debug:
+            logger.warning(
+                "JWT 密钥为默认值，存在安全风险！请设置环境变量 WTCS_JWT_SECRET 后再上线。"
+            )
+        else:
+            raise RuntimeError(
+                "生产环境禁止使用默认 JWT 密钥，请设置环境变量 WTCS_JWT_SECRET"
+            )
     logger.info("WTCS 启动中：%s v%s", settings.app_name, settings.version)
     await store.init()
     from app.core.auth import ensure_default_users
 
     await ensure_default_users()
+    from app.services.database import db_manager
+
+    await db_manager.load_from_store()
     await hub.start()
     yield
     await hub.stop()

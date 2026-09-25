@@ -27,14 +27,20 @@ export class PageErrorBoundary extends Component<Props, State> {
     const { error } = this.state
     if (error) {
       return (
-        <div className="panel" style={{ margin: 24, padding: 24 }}>
-          <div className="panel-head">
-            <h2>页面渲染异常</h2>
+        <div className="error-boundary">
+          <div className="error-boundary-header">
+            <div className="error-boundary-icon">!</div>
+            <div>
+              <h2 className="error-boundary-title">页面渲染异常</h2>
+            </div>
           </div>
-          <p className="mono" style={{ color: 'var(--danger)', whiteSpace: 'pre-wrap' }}>
-            {error.message || String(error)}
+          <p className="error-boundary-desc">
+            页面渲染时发生了未知错误，请尝试重试或刷新页面。如问题持续，请联系技术支持。
           </p>
-          <div className="actions" style={{ marginTop: 12 }}>
+          <div className="error-boundary-details">
+            {error.message || String(error)}
+          </div>
+          <div className="error-boundary-actions">
             <button type="button" className="btn primary" onClick={() => this.setState({ error: null })}>
               重试
             </button>

@@ -14,8 +14,7 @@ class Settings(BaseSettings):
     app_name: str = "合肥汽车风洞 WTCS"
     app_version: str = "0.1.0"
     version: str = "2.0.0"
-    debug: bool = True
-    # 建设期默认仿真；真机上线改环境变量 WTCS_FORCE_SIMULATION=false 并改 yaml
+    debug: bool = False
     force_simulation: bool = True
     jwt_secret: str = DEFAULT_JWT_SECRET
     jwt_expire_hours: int = 12
